@@ -205,5 +205,58 @@ User pivoted from Gemini to **NVIDIA AI Endpoints** (build.nvidia.com). Complete
 - 70b model: ~15–60s per call (query rewriter especially slow: 305s on one call)
 - Full eval suite: ~15 min total (well within 40 RPM rate limit with 6s inter-scenario sleep)
 
+---
+
+## Session 6 — May 14, 2026 — README, Tests, Config Refresh, Verification
+
+### What happened
+Completed every remaining requirement for submission: README, tests, refreshed configs for NVIDIA, verification, git commit.
+
+### README.md
+- Comprehensive 400-line README with: setup, quickstart, architecture diagram (Mermaid), CLI reference, API docs, design decisions summary, test scenarios, project layout, configuration table, observability guide, known limitations, deployment steps
+- Architecture diagram shows: Input Guardrails → Triage → Conditional Routing → Specialists + RAG → Output Guardrails → Response
+- Added LICENSE (MIT)
+
+### Tests added (50 total, all passing)
+| File | Tests | Coverage |
+|---|---|---|
+| `tests/test_models.py` | 13 | Pydantic models, settings, reducers |
+| `tests/test_retrieval.py` | 12 | Chunker, citations, grounding heuristics |
+| `tests/test_guardrails.py` | 16 | Input (injection, PII, length), output (citations, grounding), pipeline decisions |
+| `tests/test_registry.py` | 7 | YAML loading, routing, singleton, reload |
+| `tests/test_orchestrator_smoke.py` | 2 | Graph instantiation, node presence |
+
+### Config refresh
+- `.env.example`: NVIDIA-first (LLM_PROVIDER=nvidia, NVIDIA_API_KEY, Llama 3.1/3.3 models)
+- `requirements.txt`: Updated pins for langchain 1.x, langchain-nvidia-ai-endpoints, langgraph
+- `render.yaml`: NVIDIA provider config, secret env vars for NVIDIA_API_KEY, auto-ingest on build
+
+### Verification
+- `pytest tests/` → **50 passed, 0 failed**
+- `python -m clouddash.scripts.smoke_retrieval` → **all 4 scenarios pass**
+- `python -m clouddash.evals.run --scenario official_1` → **1.00 overall, PASS**
+- Git repo initialized, committed with message "CloudDash v1.0 — NVIDIA AI Endpoints, full eval suite, comprehensive README, tests"
+
+### Remaining for user
+1. Create private GitHub repo → `git push -u origin main`
+2. Render dashboard → New Blueprint → add NVIDIA_API_KEY secret → deploy
+3. Populate live URL in README
+
+### Assessment coverage check
+| Requirement | Status |
+|---|---|
+| 4+ agents (Triage, Technical, Billing, Knowledge, Escalation) | ✅ |
+| RAG with chunking, embedding, indexing, retrieval, citations | ✅ |
+| 15–20 KB articles (we have 19) | ✅ |
+| Agent handover with context preservation + audit logging | ✅ |
+| REST API + CLI interface | ✅ |
+| YAML-configurable agents (extensibility) | ✅ |
+| Input/output guardrails | ✅ |
+| Typed models (Pydantic) | ✅ |
+| Structured logging + trace IDs | ✅ |
+| README with setup, architecture, decisions, limitations | ✅ |
+| Tests demonstrating approach | ✅ |
+| Live deployment (Render Blueprint ready) | ⏳ user pushes + deploys |
+
 ### Next session
-- Continue building remaining agents or move to API deployment.
+- None required. Ready for submission once user deploys to Render and updates live URL.
