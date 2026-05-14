@@ -361,16 +361,33 @@ Full context, alternatives considered, and trade-offs in **[`DESIGN.md`](DESIGN.
 
 ## Deployment
 
-Live URL: **`<populated after deploy>`**
-
-The repo is a Render Blueprint — push and create a Blueprint in the Render dashboard. Provide `NVIDIA_API_KEY` as a secret env var. The build command runs `clouddash ingest` so the KB is ready before the first request.
+**One-time setup:**
 
 ```bash
-# locally:
-docker run -p 8000:8000 ...        # not packaged — Render handles the runtime
-# remotely:
-git push origin main               # autodeploy via render.yaml
+# 1. Create a private GitHub repo (e.g. github.com/yourname/clouddash)
+# 2. Add the remote and push
+git remote add origin https://github.com/yourname/clouddash.git
+git push -u origin main
+
+# 3. In Render dashboard → "New Blueprint" → select your repo
+# 4. Paste NVIDIA_API_KEY as a secret environment variable
+# 5. Deploy — the build runs `clouddash ingest` automatically
 ```
+
+**What `render.yaml` does:**
+- Free-tier Python web service
+- Build: `pip install -e . && clouddash ingest` (rebuilds KB from Markdown)
+- Start: `uvicorn clouddash.api.app:app --host 0.0.0.0 --port $PORT`
+- Health check: `/api/health`
+- Persistent disk: 1 GB for ChromaDB (`/var/data/chroma`)
+
+**After deploy, the live URL serves:**
+- `GET /` — HTMX chat UI (try the 4 scenario buttons)
+- `POST /api/chat` — REST endpoint
+- `GET /api/health` — liveness
+- `GET /docs` — Swagger UI
+
+Live URL: **`https://<your-service-name>.onrender.com`**
 
 ---
 
