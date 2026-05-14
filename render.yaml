@@ -1,0 +1,72 @@
+# Render Blueprint — single-service deployment.
+# Push this repo, then "New Blueprint" in Render → it'll pick this file up.
+# Set NVIDIA_API_KEY (and optionally LANGCHAIN_API_KEY) in the dashboard.
+
+services:
+  - type: web
+    name: clouddash-multi-agent
+    runtime: python
+    plan: free
+    pythonVersion: "3.13"
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -e .
+      python -m clouddash.scripts.ingest_kb
+    startCommand: uvicorn clouddash.api.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.7
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: HOST
+        value: 0.0.0.0
+      # ---- LLM provider (NVIDIA AI Endpoints) ----
+      - key: LLM_PROVIDER
+        value: nvidia
+      - key: NVIDIA_API_KEY            # secret — set in Render dashboard
+        sync: false
+      - key: LLM_REASONING_MODEL
+        value: meta/llama-3.3-70b-instruct
+      - key: LLM_FAST_MODEL
+        value: meta/llama-3.1-8b-instruct
+      - key: LLM_JUDGE_MODEL
+        value: meta/llama-3.3-70b-instruct
+      - key: LLM_TEMPERATURE
+        value: "0.0"
+      - key: LLM_TIMEOUT_SECONDS
+        value: "90"
+      - key: LLM_MAX_RETRIES
+        value: "5"
+      # ---- Observability (optional) ----
+      - key: LANGCHAIN_TRACING_V2
+        value: "false"
+      - key: LANGCHAIN_API_KEY         # secret — set in Render dashboard if enabling
+        sync: false
+      - key: LANGCHAIN_PROJECT
+        value: clouddash-multi-agent-prod
+      # ---- Retrieval ----
+      - key: EMBEDDING_MODEL
+        value: BAAI/bge-small-en-v1.5
+      - key: CHROMA_PERSIST_DIR
+        value: /var/data/chroma
+      - key: RERANKER_TYPE
+        value: llm
+      - key: RETRIEVAL_TOP_K_RERANKED
+        value: "4"
+      - key: GROUNDING_MIN_SCORE
+        value: "0.25"
+      # ---- Guardrails ----
+      - key: MAX_INPUT_LENGTH
+        value: "4000"
+      - key: MAX_TURNS_PER_CONVERSATION
+        value: "20"
+      - key: SELF_CORRECTION_MAX_ATTEMPTS
+        value: "2"
+    disk:
+      name: chroma-data
+      mountPath: /var/data
+      sizeGB: 1

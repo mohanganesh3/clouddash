@@ -1,0 +1,70 @@
+{
+  "cust_acme_42": {
+    "customer_id": "cust_acme_42",
+    "org_name": "Acme Corp",
+    "plan": "Pro",
+    "email": "ops@acme.example",
+    "billing_contact_email": "billing@acme.example",
+    "signup_date": "2024-11-08",
+    "current_invoices": [
+      {
+        "invoice_id": "INV-2026-04-1234",
+        "amount_usd": 149.00,
+        "status": "paid",
+        "billing_period": "2026-04-01 to 2026-04-30",
+        "issued_at": "2026-04-01"
+      },
+      {
+        "invoice_id": "INV-2026-04-1234-DUP",
+        "amount_usd": 149.00,
+        "status": "paid",
+        "billing_period": "2026-04-01 to 2026-04-30",
+        "issued_at": "2026-04-01",
+        "note": "Suspected duplicate — pending review"
+      }
+    ],
+    "open_tickets": [
+      {
+        "ticket_id": "T-2026-05-001",
+        "subject": "SSO sign-in failures for new domain",
+        "status": "resolved",
+        "resolved_at": "2026-05-08",
+        "resolution": "Domain claim verified; SCIM resync completed."
+      }
+    ],
+    "rbac_role": "Owner",
+    "sso_enabled": true
+  },
+  "cust_widgets_99": {
+    "customer_id": "cust_widgets_99",
+    "org_name": "Widgets Inc",
+    "plan": "Enterprise",
+    "email": "admin@widgets.example",
+    "billing_contact_email": "billing@widgets.example",
+    "signup_date": "2024-03-15",
+    "current_invoices": [
+      {
+        "invoice_id": "INV-2026-04-9001",
+        "amount_usd": 1499.00,
+        "status": "paid",
+        "billing_period": "2026-04-01 to 2026-04-30",
+        "issued_at": "2026-04-01"
+      }
+    ],
+    "open_tickets": [],
+    "rbac_role": "Admin",
+    "sso_enabled": true
+  },
+  "cust_solo_dev": {
+    "customer_id": "cust_solo_dev",
+    "org_name": "Solo Developer",
+    "plan": "Free",
+    "email": "dev@example.com",
+    "billing_contact_email": "dev@example.com",
+    "signup_date": "2026-04-22",
+    "current_invoices": [],
+    "open_tickets": [],
+    "rbac_role": "Owner",
+    "sso_enabled": false
+  }
+}

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CloudDash Support · Multi-Agent</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="bg-slate-50 text-slate-900 antialiased">
+<div class="min-h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-md bg-gradient-to-br from-indigo-500 to-violet-600 grid place-items-center text-white font-bold">C</div>
+      <div>
+        <div class="font-semibold leading-tight">CloudDash Support</div>
+        <div class="text-xs text-slate-500">Multi-agent customer support · {{ provider }} · {{ model_reasoning }}</div>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <span class="text-xs text-slate-500 hidden md:inline">Active agents:</span>
+      <div class="flex gap-1 flex-wrap">
+        {% for a in agents %}
+        <span class="text-xs px-2 py-1 rounded-full bg-slate-100 border border-slate-200 text-slate-700 capitalize">{{ a }}</span>
+        {% endfor %}
+      </div>
+      <button
+        class="ml-2 text-xs px-3 py-1.5 rounded-md bg-violet-600 text-white hover:bg-violet-700 transition"
+        hx-post="/ui/reload-registry"
+        hx-target="#registry-status"
+        hx-swap="innerHTML">
+        Reload Registry
+      </button>
+    </div>
+  </header>
+
+  <main class="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_22rem] gap-0">
+    <!-- Chat column -->
+    <section class="flex flex-col bg-white border-r border-slate-200 min-h-0">
+      <!-- Scenario buttons -->
+      <div class="flex flex-wrap gap-2 p-3 border-b border-slate-200 bg-slate-50">
+        <span class="text-xs text-slate-600 self-center mr-1">Try a scenario:</span>
+        {% for n, label in [(1, '1. Alerts after AWS update'), (2, '2. Cross-agent: SSO + upgrade'), (3, '3. Escalation: double charge'), (4, '4. KB miss: Datadog')] %}
+        <button
+          class="text-xs px-3 py-1.5 rounded-md bg-white border border-slate-200 hover:border-indigo-400 hover:bg-indigo-50 transition"
+          hx-post="/ui/scenario/{{ n }}"
+          hx-target="#chat-log"
+          hx-swap="beforeend"
+          hx-indicator="#spinner">
+          {{ label }}
+        </button>
+        {% endfor %}
+        <button
+          class="ml-auto text-xs px-3 py-1.5 rounded-md bg-rose-50 border border-rose-200 text-rose-700 hover:bg-rose-100 transition"
+          onclick="document.getElementById('chat-log').innerHTML=''; document.querySelector('input[name=conversation_id]').value='';">
+          Clear chat
+        </button>
+      </div>
+
+      <div id="registry-status" class="px-3"></div>
+
+      <!-- Messages -->
+      <div id="chat-log" class="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+        <div class="text-center text-sm text-slate-500 py-8">
+          <div class="mx-auto w-12 h-12 rounded-full bg-indigo-100 grid place-items-center mb-2 text-indigo-600">
+            <!-- chat icon -->
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-6 h-6"><path d="M4.804 21.644A6.7 6.7 0 0 0 6 21.75a6.74 6.74 0 0 0 3.741-1.13c.832.18 1.695.28 2.582.28 5.18 0 9.42-3.34 9.42-7.5S17.5 5.9 12.323 5.9c-5.176 0-9.418 3.34-9.418 7.5 0 1.616.638 3.111 1.721 4.336L3.05 21.022a.75.75 0 0 0 .9.945z"/></svg>
+          </div>
+          <p class="font-medium">Ask anything about CloudDash</p>
+          <p class="text-xs mt-1">or click a scenario button above</p>
+        </div>
+      </div>
+
+      <!-- Composer -->
+      <form
+        class="border-t border-slate-200 p-3 flex flex-col gap-2 bg-white"
+        hx-post="/ui/chat"
+        hx-target="#chat-log"
+        hx-swap="beforeend"
+        hx-indicator="#spinner"
+        hx-on::after-request="
+          if (event.detail.successful) {
+            const turn = document.querySelector('#chat-log [data-conversation-id]:last-child');
+            if (turn) { document.querySelector('input[name=conversation_id]').value = turn.dataset.conversationId; }
+            this.querySelector('textarea').value = '';
+            document.getElementById('chat-log').scrollTop = document.getElementById('chat-log').scrollHeight;
+          }
+        ">
+        <input type="hidden" name="conversation_id" value="">
+        <div class="flex gap-2 items-end">
+          <textarea
+            name="message"
+            rows="2"
+            required
+            class="flex-1 resize-none rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            placeholder="Type your question — e.g. 'My alerts stopped firing after I rotated my AWS credentials.'"></textarea>
+          <button class="rounded-md bg-indigo-600 text-white px-4 py-2 text-sm font-medium hover:bg-indigo-700 transition">
+            Send
+          </button>
+        </div>
+        <div class="flex items-center gap-3 text-xs text-slate-500">
+          <span id="spinner" class="htmx-indicator flex items-center gap-1">
+            <svg class="animate-spin h-3 w-3 text-indigo-600" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/></svg>
+            Routing through agents…
+          </span>
+          <span class="ml-auto">Tip: send a follow-up to test multi-turn handover</span>
+        </div>
+      </form>
+    </section>
+
+    <!-- Side panel -->
+    <aside class="bg-slate-50 p-4 overflow-y-auto text-sm space-y-4">
+      <div class="bg-white rounded-md border border-slate-200 p-3">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">How it works</h3>
+        <ol class="text-xs space-y-1 text-slate-700 list-decimal pl-4">
+          <li>Triage classifies your intent + extracts entities</li>
+          <li>Routes to a specialist agent (Technical / Billing / Knowledge / Escalation)</li>
+          <li>Specialist retrieves KB chunks (hybrid BM25 + dense + LLM rerank)</li>
+          <li>Cites inline as <code class="text-[10px] bg-slate-100 px-1 rounded">[KB-XXX § N]</code></li>
+          <li>Cross-agent handover preserves context + audit log</li>
+          <li>Two-layer guardrails: input + output grounding</li>
+        </ol>
+      </div>
+
+      <div class="bg-white rounded-md border border-slate-200 p-3">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Add an agent live</h3>
+        <p class="text-xs text-slate-700">Edit <code class="text-[10px] bg-slate-100 px-1 rounded">config/agents.yaml</code> + add a Markdown prompt under <code class="text-[10px] bg-slate-100 px-1 rounded">src/clouddash/prompts/</code>, then click <strong>Reload Registry</strong>. No code changes, no restart.</p>
+      </div>
+
+      <div class="bg-white rounded-md border border-slate-200 p-3">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Endpoints</h3>
+        <ul class="text-xs space-y-1 text-slate-700 font-mono">
+          <li>GET  /api/health</li>
+          <li>GET  /api/agents</li>
+          <li>POST /api/chat</li>
+          <li>GET  /api/trace/{id}</li>
+          <li>GET  /api/conversations/{id}</li>
+        </ul>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="px-6 py-2 text-xs text-slate-500 border-t border-slate-200 bg-white flex justify-between">
+    <span>CloudDash — built with LangGraph · ChromaDB · {{ provider }}</span>
+    <a href="/docs" class="hover:text-indigo-600">/docs (OpenAPI)</a>
+  </footer>
+</div>
+</body>
+</html>

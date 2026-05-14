@@ -1,0 +1,16 @@
+/* Minimal CSS — Tailwind handles the rest via CDN. */
+
+.htmx-indicator { opacity: 0; transition: opacity 200ms; }
+.htmx-request .htmx-indicator { opacity: 1; }
+.htmx-request.htmx-indicator { opacity: 1; }
+
+/* Smooth scroll for chat log */
+#chat-log { scroll-behavior: smooth; }
+
+/* Prose tweaks for assistant bubble */
+.prose code {
+  font-size: 0.85em;
+  background: rgba(15, 23, 42, 0.06);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
