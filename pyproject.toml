@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "CloudDash — Multi-Agent Customer Support System (Vikara assignment)"
 authors = [{name = "Mohan Ganesh", email = "mohanganesh165577@gmail.com"}]
 readme = "README.md"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.15"
 license = {text = "MIT"}
 keywords = ["agents", "rag", "langgraph", "customer-support", "multi-agent"]
 classifiers = [
