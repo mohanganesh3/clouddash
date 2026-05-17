@@ -81,14 +81,7 @@
         hx-target="#chat-log"
         hx-swap="beforeend"
         hx-indicator="#spinner"
-        hx-on::after-request="
-          if (event.detail.successful) {
-            const turn = document.querySelector('#chat-log [data-conversation-id]:last-child');
-            if (turn) { document.querySelector('input[name=conversation_id]').value = turn.dataset.conversationId; }
-            this.querySelector('textarea').value = '';
-            document.getElementById('chat-log').scrollTop = document.getElementById('chat-log').scrollHeight;
-          }
-        ">
+        hx-on="afterRequest: if (event.detail.successful) { const turn = document.querySelector('#chat-log [data-conversation-id]:last-child'); if (turn) { document.querySelector('input[name=conversation_id]').value = turn.dataset.conversationId; } this.querySelector('textarea').value = ''; document.getElementById('chat-log').scrollTop = document.getElementById('chat-log').scrollHeight; }">
         <input type="hidden" name="conversation_id" value="">
         <div class="flex gap-2 items-end">
           <textarea
@@ -97,7 +90,7 @@
             required
             class="flex-1 resize-none rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             placeholder="Type your question — e.g. 'My alerts stopped firing after I rotated my AWS credentials.'"></textarea>
-          <button class="rounded-md bg-indigo-600 text-white px-4 py-2 text-sm font-medium hover:bg-indigo-700 transition">
+          <button type="submit" class="rounded-md bg-indigo-600 text-white px-4 py-2 text-sm font-medium hover:bg-indigo-700 transition">
             Send
           </button>
         </div>
