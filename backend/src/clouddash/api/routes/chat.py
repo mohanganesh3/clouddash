@@ -118,6 +118,7 @@ def _chunk_payload(chunk) -> dict:
             "score": chunk.get("rerank_score", 0),
             "why": chunk.get("rerank_rationale", ""),
             "source": chunk.get("source", "kb"),
+            "url": (chunk.get("metadata") or {}).get("url", ""),
         }
     return {
         "chunk_id": chunk.chunk_id,
@@ -127,6 +128,7 @@ def _chunk_payload(chunk) -> dict:
         "score": chunk.rerank_score,
         "why": chunk.rerank_rationale,
         "source": chunk.source,
+        "url": chunk.metadata.get("url", ""),
     }
 
 

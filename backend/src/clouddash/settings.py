@@ -40,7 +40,8 @@ class Settings(BaseSettings):
     # despite what their docs say. both work actually. using Bearer for simplicity.
     sarvam_base_url: str = Field(default="https://api.sarvam.ai/v1")
     sarvam_reasoning_model: str = Field(default="sarvam-105b")
-    sarvam_fast_model: str = Field(default="sarvam-30b")
+    sarvam_fast_model: str = Field(default="sarvam-105b")
+    sarvam_reasoning_effort: Literal["low", "medium", "high"] = Field(default="high")
 
     # LangSmith — on by default if key is set
     langchain_tracing_v2: bool = Field(default=False)

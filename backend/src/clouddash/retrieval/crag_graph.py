@@ -218,19 +218,28 @@ def _web_fallback_node(state: CRAGState) -> dict:
 
     from tavily import TavilyClient
     client = TavilyClient(api_key=cfg.tavily_api_key)
-    q = f"CloudDash {state['query']}"
+    q = f"{state['query']} official documentation"
     try:
-        resp = client.search(q, max_results=3, include_raw_content=False)
+        resp = client.search(
+            q,
+            search_depth="advanced",
+            max_results=3,
+            include_raw_content=False,
+        )
         web_chunks = []
         for r in resp.get("results", []):
+            url = r.get("url", "")
+            title = r.get("title", "Web result")
+            content = r.get("content", "")[:800]
             web_chunks.append(RetrievedChunk(
-                chunk_id=f"web-{hash(r['url']) & 0xFFFF:04x}",
+                chunk_id=f"web-{hash(url) & 0xFFFF:04x}",
                 kb_id="WEB",
-                title=r.get("title", "Web result"),
+                title=title,
                 category="web",
                 section=0,
-                content=r.get("content", "")[:800],
+                content=f"URL: {url}\n{content}" if url else content,
                 rerank_score=r.get("score", 0.5),
+                metadata={"url": url},
                 source="web",
             ))
         # merge web + any decent KB chunks we had

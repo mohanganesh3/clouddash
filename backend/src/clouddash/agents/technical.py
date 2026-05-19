@@ -111,7 +111,7 @@ def _parse_citations(raw: list[str], chunks) -> list[Citation]:
     result = []
     seen: set[tuple[str, int, str]] = set()
     for ref in raw:
-        match = re.search(r"\b(KB-\d+)(?:\s*§\s*(-?\d+))?", ref)
+        match = re.search(r"\b(KB-\d+|WEB)(?:\s*§\s*(-?\d+))?", ref)
         kb_id = match.group(1) if match else ""
         section = int(match.group(2)) if match and match.group(2) is not None else None
 

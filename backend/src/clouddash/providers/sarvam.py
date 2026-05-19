@@ -5,7 +5,9 @@ Auth: May 14 — verified that standard Bearer token works fine here despite
 the docs saying api-subscription-key. Both work. Keeping Bearer for simplicity.
 
 sarvam-105b has reasoning_effort which is nice for the specialist agents.
-sarvam-30b is fast enough for triage/rewrite — comparable to Flash latency.
+sarvam-105b is used for every tier in the final demo configuration.
+Sarvam docs expose reasoning_effort as a top-level chat-completions field:
+low | medium | high, default medium. Use high only for reasoning-tier calls.
 """
 from __future__ import annotations
 
@@ -36,7 +38,5 @@ def build_sarvam(model: str, temperature: float = 0.0, reasoning: bool = False) 
         "timeout": cfg.llm_timeout_seconds,
     }
     if reasoning and model == cfg.sarvam_reasoning_model:
-        # FIXME: sarvam-105b's reasoning_effort sometimes causes streaming to stall.
-        # Only enable for non-streaming paths until I figure out what's happening.
-        kwargs["model_kwargs"] = {"reasoning_effort": "high"}
+        kwargs["reasoning_effort"] = cfg.sarvam_reasoning_effort
     return WrappedSarvamChatOpenAI(**kwargs)

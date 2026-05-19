@@ -19,6 +19,7 @@ export interface RetrievedChunk {
   score: number;
   why: string;
   source: "kb" | "web";
+  url?: string;
 }
 
 export interface HandoverEvent {

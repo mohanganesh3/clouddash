@@ -63,6 +63,7 @@ export function useStreamingChat() {
         const decoder = new TextDecoder();
         let rawBuf = "";
         let finalMsg: Partial<import("@/lib/types").ChatMessage> = {};
+        let finalized = false;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -152,6 +153,10 @@ export function useStreamingChat() {
                   content: (data.customer_message as string) || "This needs human approval before I create the support ticket.",
                   agent: "escalation",
                 };
+                if (!finalized) {
+                  store.finalizeStreaming(assistantId, finalMsg);
+                  finalized = true;
+                }
                 break;
 
               case "final":
@@ -162,6 +167,10 @@ export function useStreamingChat() {
                   crag_path: data.crag_path as CRAGPath,
                   latency_ms: data.latency_ms as number,
                 };
+                if (!finalized) {
+                  store.finalizeStreaming(assistantId, finalMsg);
+                  finalized = true;
+                }
                 break;
 
               case "done":
@@ -170,12 +179,18 @@ export function useStreamingChat() {
 
               case "error":
                 finalMsg = { content: (data.message as string) ?? "An error occurred." };
+                if (!finalized) {
+                  store.finalizeStreaming(assistantId, finalMsg);
+                  finalized = true;
+                }
                 break;
             }
           }
         }
 
-        store.finalizeStreaming(assistantId, finalMsg);
+        if (!finalized) {
+          store.finalizeStreaming(assistantId, finalMsg);
+        }
       } catch (err: unknown) {
         if (err instanceof Error && err.name !== "AbortError") {
           const detail = err.message ? ` (${err.message})` : "";

@@ -27,7 +27,11 @@ class KnowledgeAgent(BaseAgent):
         history = self._history_context(state)
 
         chunks, crag_path = await run_crag(user_msg, history)
-        ctx = "\n\n".join(f"[{c.kb_id} § {c.section}] {c.content[:500]}" for c in chunks)
+        ctx = "\n\n".join(
+            f"[{c.kb_id} § {c.section}] Source: {c.source}. Title: {c.title}\n{c.content[:500]}"
+            for c in chunks
+        )
+        context_label = "Retrieved KB/web context" if any(c.source == "web" for c in chunks) else "Retrieved KB context"
 
         llm = self.get_llm("reasoning").with_structured_output(_KnowledgeResponse)
         msgs = [
@@ -35,7 +39,8 @@ class KnowledgeAgent(BaseAgent):
             HumanMessage(
                 content=(
                     f"Customer: {user_msg}\nHistory: {history}\n\n"
-                    f"KB context:\n{ctx or 'No relevant articles found.'}"
+                    f"CRAG path: {crag_path.value}\n"
+                    f"{context_label}:\n{ctx or 'No relevant articles or web results found.'}"
                 )
             ),
         ]

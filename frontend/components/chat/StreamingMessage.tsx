@@ -9,6 +9,11 @@ interface Props {
   message: ChatMessage;
 }
 
+function citationLabel(id: string, section?: string): string {
+  if (id === "WEB") return "Web result";
+  return section ? `${id} sec ${section}` : id;
+}
+
 // ── Simple inline markdown renderer ──────────────────────────────────────────
 function renderMarkdown(text: string): React.ReactNode {
   const lines = text.split("\n");
@@ -119,8 +124,8 @@ function renderInline(text: string): React.ReactNode {
   const patterns = [
     // Citations
     { re: /\[([A-Z]{2}-[\w-]+)\s*§\s*(\d+)\]/, render: (m: RegExpMatchArray) => (
-      <span key={key++} className="citation-chip" title={`${m[1]} §${m[2]}`}>
-        {m[1]} §{m[2]}
+      <span key={key++} className="citation-chip" title={citationLabel(m[1], m[2])}>
+        {citationLabel(m[1], m[2])}
       </span>
     )},
     { re: /\[([A-Z]{2}-[\w-]+)\]/, render: (m: RegExpMatchArray) => (

@@ -27,6 +27,11 @@ function ScoreBar({ score }: { score: number }) {
   );
 }
 
+function chunkLabel(kbId: string, section: number): string {
+  if (kbId === "WEB") return "Web result";
+  return `${kbId} sec ${section}`;
+}
+
 export function RetrievedChunks() {
   const { retrievedChunks, cragPath } = useConversationStore();
 
@@ -84,7 +89,7 @@ export function RetrievedChunks() {
               className="text-[10px] font-semibold"
               style={{ color: "#14b8a6", fontFamily: "'JetBrains Mono', monospace" }}
             >
-              [{chunk.kb_id} §{chunk.section}]
+              {chunkLabel(chunk.kb_id, chunk.section)}
             </span>
             <div className="flex items-center gap-1.5">
               {chunk.source === "web" && (
