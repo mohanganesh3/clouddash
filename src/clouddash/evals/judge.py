@@ -16,7 +16,7 @@ from clouddash.llm import _build_chat_model, load_prompt
 from clouddash.logging_setup import get_logger
 from clouddash.models import (
     Citation,
-    ConversationState,
+    GraphState,
     EvalRubricScore,
     EvalScenario,
     HandoverEvent,
@@ -54,7 +54,7 @@ def _render_citations(citations: list[Citation]) -> str:
 
 async def judge_scenario(
     scenario: EvalScenario,
-    final_state: ConversationState,
+    final_state: GraphState,
     final_response: str,
     citations: list[Citation],
     actual_route: list[str],

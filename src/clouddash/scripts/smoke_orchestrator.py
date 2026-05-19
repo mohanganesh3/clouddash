@@ -21,7 +21,7 @@ from rich.panel import Panel
 from clouddash.logging_setup import setup_logging, get_logger
 from clouddash.models import (
     AgentType,
-    ConversationState,
+    GraphState,
     CustomerProfile,
     Plan,
 )
@@ -103,7 +103,7 @@ SCENARIOS: list[_Scenario] = [
 
 async def run_scenario(orchestrator: Orchestrator, scenario: _Scenario, console: Console) -> bool:
     console.rule(f"[bold cyan]Scenario {scenario.sid} — {scenario.name}")
-    state = ConversationState(
+    state = GraphState(
         trace_id=uuid4(),
         customer_profile=scenario.initial_profile,
     )

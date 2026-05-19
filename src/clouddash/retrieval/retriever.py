@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 from clouddash.exceptions import RetrievalError
 from clouddash.llm import get_llm, load_prompt
 from clouddash.logging_setup import get_logger
-from clouddash.models import ConversationState, RetrievedChunk
+from clouddash.models import GraphState, RetrievedChunk
 from clouddash.retrieval.bm25 import BM25Index
 from clouddash.retrieval.query_rewriter import rewrite_query
 from clouddash.retrieval.vector_store import VectorStore
@@ -186,7 +186,7 @@ class Retriever:
         self,
         query: str | None = None,
         *,
-        state: ConversationState | None = None,
+        state: GraphState | None = None,
         top_k: int | None = None,
     ) -> list[RetrievedChunk]:
         """Run the full hybrid + rerank pipeline. Returns top_k RetrievedChunks."""

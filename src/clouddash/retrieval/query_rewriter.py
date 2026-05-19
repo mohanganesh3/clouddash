@@ -19,7 +19,7 @@ from clouddash.llm import get_llm, load_prompt
 from clouddash.logging_setup import get_logger
 
 if TYPE_CHECKING:
-    from clouddash.models import ConversationState
+    from clouddash.models import GraphState
 
 logger = get_logger(__name__)
 
@@ -41,7 +41,7 @@ class _RewrittenQueries(BaseModel):
 
 
 def rewrite_query(
-    state: ConversationState,
+    state: GraphState,
     *,
     latest_message: str | None = None,
     last_n_turns: int = 5,

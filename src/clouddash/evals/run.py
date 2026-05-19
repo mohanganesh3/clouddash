@@ -28,7 +28,7 @@ from clouddash.logging_setup import setup_logging, get_logger
 from clouddash.models import (
     AgentType,
     Citation,
-    ConversationState,
+    GraphState,
     CustomerProfile,
     EvalResult,
     EvalScenario,
@@ -58,7 +58,7 @@ async def run_one(
     """Execute one scenario end-to-end and score it."""
     console.rule(f"[bold cyan]{scenario.scenario_id} — {scenario.name}")
 
-    state = ConversationState(
+    state = GraphState(
         trace_id=uuid4(),
         customer_profile=CustomerProfile(),
     )

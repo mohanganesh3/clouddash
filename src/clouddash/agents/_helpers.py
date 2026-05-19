@@ -10,7 +10,7 @@ from clouddash.logging_setup import get_logger
 from clouddash.models import (
     AgentType,
     Citation,
-    ConversationState,
+    GraphState,
     HandoverPacket,
     HandoverReason,
     RetrievedChunk,
@@ -24,7 +24,7 @@ from clouddash.retrieval.citations import (
 logger = get_logger(__name__)
 
 
-def render_customer_profile(state: ConversationState) -> str:
+def render_customer_profile(state: GraphState) -> str:
     """Render the customer profile for inclusion in agent prompts."""
     p = state.customer_profile
     parts: list[str] = []
@@ -42,7 +42,7 @@ def render_customer_profile(state: ConversationState) -> str:
     return ", ".join(parts) if parts else "(no profile yet)"
 
 
-def render_handover_context(state: ConversationState) -> str:
+def render_handover_context(state: GraphState) -> str:
     """Render the incoming HandoverPacket for the receiving agent's prompt."""
     pkt = state.pending_handover
     if pkt is None:

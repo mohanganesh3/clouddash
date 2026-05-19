@@ -27,7 +27,7 @@ from rich.table import Table
 from clouddash.logging_setup import setup_logging
 from clouddash.models import (
     AgentType,
-    ConversationState,
+    GraphState,
     CustomerProfile,
     Plan,
 )
@@ -87,7 +87,7 @@ def agents() -> None:
 # ---- chat -------------------------------------------------------------------
 
 
-def _render_response(state: ConversationState) -> None:
+def _render_response(state: GraphState) -> None:
     final = None
     for m in reversed(state.messages):
         if m.role.value == "assistant":
@@ -132,7 +132,7 @@ def chat(
     )
 
     profile = CustomerProfile(customer_id=customer_id, org_name=org, plan=plan)
-    state = ConversationState(trace_id=uuid4(), customer_profile=profile)
+    state = GraphState(trace_id=uuid4(), customer_profile=profile)
     orchestrator = Orchestrator()
 
     async def loop() -> None:

@@ -17,7 +17,7 @@ from rich.console import Console
 from rich.table import Table
 
 from clouddash.logging_setup import setup_logging
-from clouddash.models import ConversationState, Message, MessageRole
+from clouddash.models import GraphState, Message, MessageRole
 from clouddash.retrieval.retriever import Retriever
 
 
@@ -79,7 +79,7 @@ def main() -> int:
         console.print(f"[dim]Query:[/dim] {scenario.user_message}\n")
 
         # Build a conversation state so the rewriter has context to work with
-        state = ConversationState(
+        state = GraphState(
             messages=[Message(role=MessageRole.USER, content=scenario.user_message, turn_id=1)],
             turn_id=1,
         )
