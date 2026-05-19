@@ -11,7 +11,7 @@ from clouddash.models import (
     AgentResponse,
     AgentType,
     Citation,
-    ConversationState,
+    GraphState,
     CustomerProfile,
     HandoverEvent,
     HandoverPacket,
@@ -118,20 +118,20 @@ class TestAgentResponse:
         assert resp.escalate is True
 
 
-class TestConversationState:
+class TestGraphState:
     def test_latest_user_message(self) -> None:
         msgs = [
             Message(role=MessageRole.USER, content="hi", turn_id=1),
             Message(role=MessageRole.ASSISTANT, content="hello", turn_id=1, agent=AgentType.TRIAGE),
             Message(role=MessageRole.USER, content="alerts broken", turn_id=2),
         ]
-        state = ConversationState(messages=msgs, turn_id=2)
+        state = GraphState(messages=msgs, turn_id=2)
         latest = state.latest_user_message()
         assert latest is not None
         assert latest.content == "alerts broken"
 
     def test_conversation_text_renders(
-        self, sample_conversation_state: ConversationState
+        self, sample_conversation_state: GraphState
     ) -> None:
         text = sample_conversation_state.conversation_text()
         assert "[user]" in text

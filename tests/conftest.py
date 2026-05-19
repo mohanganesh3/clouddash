@@ -13,7 +13,7 @@ from clouddash.models import (
     AttemptOutcome,
     AttemptRecord,
     Citation,
-    ConversationState,
+    GraphState,
     CustomerProfile,
     HandoverPacket,
     HandoverReason,
@@ -112,8 +112,8 @@ def sample_handover_packet(
 def sample_conversation_state(
     sample_customer: CustomerProfile,
     sample_user_message: Message,
-) -> ConversationState:
-    return ConversationState(
+) -> GraphState:
+    return GraphState(
         customer_profile=sample_customer,
         messages=[sample_user_message],
         turn_id=1,
