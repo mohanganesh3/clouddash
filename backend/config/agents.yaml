@@ -1,0 +1,72 @@
+# =============================================================================
+# CloudDash — Agent Registry
+# =============================================================================
+# Per ADR-004: every agent is declared here. Adding a new agent (e.g. an
+# Onboarding Agent for the live "extensibility" demo) is two steps:
+#   1. Create `src/clouddash/agents/<name>.py` with a class extending BaseAgent.
+#   2. Add a new entry under `agents:` below.
+# The orchestrator and routing logic read this file at startup — no Python
+# code changes anywhere else.
+# =============================================================================
+
+agents:
+
+  triage:
+    class: clouddash.agents.triage.TriageAgent
+    system_prompt: triage
+    model_tier: fast            # gemini-2.5-flash — classification is cheap
+    tools: []
+    requires_kb: false
+    description: >
+      First point of contact. Classifies intent, extracts entities, detects
+      sentiment + urgency, routes to the appropriate specialist. Falls back
+      to Knowledge for general inquiries.
+
+  technical:
+    class: clouddash.agents.technical.TechnicalAgent
+    system_prompt: technical
+    model_tier: reasoning       # gemini-2.5-pro — needs multi-step reasoning
+    tools: []
+    requires_kb: true
+    description: >
+      Resolves technical issues (alerts, integrations, dashboards, API,
+      SSO, RBAC). RAG-grounded with inline citations. Hands off to Billing
+      when the user shifts to billing topics; to Escalation when stuck.
+
+  billing:
+    class: clouddash.agents.billing.BillingAgent
+    system_prompt: billing
+    model_tier: reasoning
+    tools:
+      - crm_lookup              # mock customer profile lookup
+      - plan_compare            # compare features across tiers
+    requires_kb: true
+    description: >
+      Handles billing inquiries — invoices, plan changes, refunds. Has a
+      $1000 refund authority limit per KB-011; over that escalates to a
+      Billing Manager. Cites refund/upgrade/duplicate-charge policies.
+
+  knowledge:
+    class: clouddash.agents.knowledge.KnowledgeAgent
+    system_prompt: knowledge
+    model_tier: reasoning
+    tools:
+      - feature_request         # creates a feature request when KB doesn't cover
+    requires_kb: true
+    description: >
+      Handles general inquiries — feature comparisons, supported providers,
+      product roadmap questions. Owns the Scenario 4 path: when KB grounding
+      is insufficient, offers a feature request and (optionally) escalates.
+
+  escalation:
+    class: clouddash.agents.escalation.EscalationAgent
+    system_prompt: escalation
+    model_tier: fast            # summarization doesn't need top-tier reasoning
+    tools:
+      - create_ticket           # simulated human handoff
+    requires_kb: false
+    description: >
+      Packages full conversation context, sentiment, urgency, and prior
+      agent attempts into a structured EscalationTicket. Triggers the
+      simulated human handoff. Used for Scenario 3 (refund > $1k or
+      manager-requested) and as the terminal fallback when retries fail.

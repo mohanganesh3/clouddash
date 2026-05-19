@@ -25,7 +25,7 @@ ingest:  ## Ingest the knowledge base into ChromaDB
 	$(PY) -m clouddash.scripts.ingest_kb
 
 run:  ## Run the FastAPI server (with hot reload)
-	$(VENV)/bin/uvicorn clouddash.api.app:app --reload --host 0.0.0.0 --port 8000
+	$(VENV)/bin/uvicorn clouddash.api.app:app --reload --host 0.0.0.0 --port 8020
 
 cli:  ## Run the interactive CLI chat
 	$(PY) -m clouddash.cli.main chat

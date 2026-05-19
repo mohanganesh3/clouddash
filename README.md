@@ -1,22 +1,92 @@
-# CloudDash — Multi-Agent Customer Support System
+# CloudDash Support
 
-> A production-shaped multi-agent system for **CloudDash**, a fictional cloud-monitoring SaaS.
-> Built for the Vikara AI Engineering Intern take-home assessment.
->
-> **Stack:** LangGraph · LangChain · NVIDIA AI Endpoints (Llama 3.1/3.3) · ChromaDB · BM25 · FastAPI · Typer · structlog
+Multi-agent AI customer support for CloudDash, a fictional B2B SaaS for cloud monitoring. Built for an AI Engineering role assessment. I'm going to be direct about what it does, how it works, and where the rough edges are.
+
+**Backend:** http://localhost:8001/api/health  
+**Frontend:** http://localhost:3003
 
 ---
 
-## Highlights
+## What it does
 
-- **5 agents** — Triage, Technical, Billing, Knowledge, Escalation — each loaded from `config/agents.yaml`
-- **Hybrid RAG** — BM25 + dense + Reciprocal Rank Fusion + LLM reranker, with conversation-aware query rewriting
-- **Typed handover protocol** — Pydantic `HandoverPacket` carries history, entities, sentiment, urgency between agents
-- **Guardrails** — input (length, prompt-injection, PII redaction) and output (citation validity, grounding, refusal-consistency self-correction)
-- **Observability** — structured JSON logs with conversation-scoped trace IDs, JSONL audit log, optional LangSmith
-- **Eval harness** — 8 scenarios (4 official + 4 edge cases), LLM-as-judge with deterministic overrides, **8/8 PASS**
-- **Two interfaces** — REST API + minimal HTMX web UI **and** Typer CLI
-- **Extensible** — adding a new agent is a 2-step YAML+file change; orchestrator wires it automatically
+Five LangGraph agents with a real support operations dashboard:
+
+- **Triage** — LLM intent classification. Returns structured `IntentClassification` with confidence, sentiment, urgency. No regex. No if/else.
+- **Technical** — alert configs, integrations, SSO, API, dashboards. CRAG retrieval.
+- **Billing** — plan changes, invoice disputes, refunds (up to $1k autonomy). Pulls from mock CRM via `@tool`.
+- **Knowledge** — general KB queries. Files feature requests when KB has a gap.
+- **Escalation** — calls LangGraph's `interrupt()`. Graph actually pauses. Human approves via HITL dialog. Resumes with `Command(resume=...)`.
+
+Retrieval is its own LangGraph subgraph (CRAG): rewrite → parallel BM25+dense → RRF fusion → Cohere rerank → LLM relevance eval → branch to supplement or Tavily web fallback. Three paths: direct (>0.7), supplement (0.3–0.7), web (< 0.3).
+
+---
+
+## Stack
+
+Python 3.13 · LangGraph 0.2 · LangChain 0.3 · FastAPI · Pydantic v2 · ChromaDB · rank-bm25 · Cohere Rerank · Next.js 15 · shadcn/ui · Tailwind CSS 4 · Framer Motion · Zustand
+
+**LLM providers**: Google Gemini (primary), Sarvam AI (Indian LLM, OpenAI-compat at `sarvam.ai/v1`), Groq as fallback via ChatOpenAI base_url trick (langchain-groq requires core>=1.x which breaks 0.3.x pinning — wired through ChatOpenAI instead).
+
+---
+
+## Quick start
+
+```bash
+# .env at repo root — copy from .env.example and fill in keys
+# Need at least: GOOGLE_API_KEY and GROQ_API_KEY (Gemini has 20 req/day free tier)
+
+# backend
+pip install -e backend/
+PYTHONPATH=backend/src uvicorn clouddash.api.app:app --port 8001
+
+# frontend
+cd frontend && npm install && npm run dev
+```
+
+First run downloads `BAAI/bge-small-en-v1.5` (~130MB) and ingests the KB (~35s). Subsequent starts pick up from ChromaDB.
+
+---
+
+## Why these choices
+
+**LangGraph over CrewAI**: Spent ~2 hours on CrewAI first. Routing was too opaque — couldn't see why triage was sending queries to the wrong specialist, no clean checkpointing. LangGraph exposes the graph structure explicitly. The routing logic is in my code, not a framework abstraction.
+
+**CRAG as a subgraph**: It shows up as a distinct subgraph in LangSmith with its own node timeline. The relevance evaluator makes a visible decision. A bare function call is invisible to the evaluator.
+
+**interrupt() for HITL**: LangGraph 0.2's interrupt() actually pauses the graph and checkpoints state. The frontend shows an approval dialog, graph resumes via `Command(resume=...)`. Every other approach either fakes it or blocks the event loop.
+
+**Sarvam AI**: Their sarvam-30b is fast and cheap for triage/rewriting. More importantly, their language detection enables a multilingual greeting — detect Hindi/Tamil/Telugu/etc., respond in that language, continue in English. Real product thinking for an India-deployed system.
+
+**Gemini quota note**: Free tier is 20 req/day for gemini-2.5-flash. Hit this immediately during testing. Set `LLM_PROVIDER=groq` in `.env` for unlimited testing (llama-3.3-70b-versatile).
+
+---
+
+## Structure
+
+```
+backend/src/clouddash/
+  agents/       triage, technical, billing, knowledge, escalation + registry
+  orchestrator/ main graph (SqliteSaver, interrupt, routing)
+  retrieval/    CRAG subgraph + ChromaDB + BM25 + Cohere
+  guardrails/   LLM injection detection + regex/LLM PII + LLM grounding
+  api/          FastAPI + SSE streaming
+  providers/    Gemini + Sarvam + Groq
+  tools/        @tool: crm_lookup, create_ticket, feature_request
+  evals/        RAGAS + LLM-judge
+frontend/
+  components/   Dashboard, chat, trace timeline, HITL dialog, handover banner
+  hooks/        useStreamingChat (SSE)
+  store/        Zustand conversation store
+```
+
+---
+
+## What I'd change with more time
+
+- Qdrant instead of ChromaDB for scale. Chroma's HNSW gets unreliable past ~100k chunks.
+- Two LLM calls per agent would enable true token-by-token generation and structured extraction. This build keeps one structured call per agent, streams live graph phases while reasoning, then streams the validated final answer as clean UI deltas.
+- Async guardrail evaluation. Injection check adds ~800ms because it blocks before retrieval starts.
+- Persistent BM25 index serialized to disk. Currently rebuilt from ChromaDB on every restart (~1s, acceptable for now).
 
 ---
 
@@ -350,7 +420,7 @@ Full context, alternatives considered, and trade-offs in **[`DESIGN.md`](DESIGN.
 
 ## Known limitations
 
-- **In-memory conversation store.** `Conversations` lives in process memory in `api/app.py`. Restart loses state. For production: swap for Redis or LangGraph's `SqliteSaver` checkpointer (one-line change).
+- **SQLite checkpoint store.** LangGraph state is persisted with `SqliteSaver` under `backend/data/graph_checkpoints.sqlite`. For a multi-instance deployment, move the checkpointer to Postgres.
 - **Mock CRM.** `tools/crm.py` reads from `data/mock_customers.json`. Real billing/account lookups would call the actual CloudDash CRM.
 - **Simulated escalation.** Escalation creates a fake ticket UUID; no real human handoff.
 - **Latency.** With NVIDIA's free tier, end-to-end turns range 30–180 s (mostly 70b model + LLM reranker). Acceptable for the demo; production would parallelize rewrite + retrieval and use a smaller reranker.

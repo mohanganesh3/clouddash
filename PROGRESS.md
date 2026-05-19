@@ -19,6 +19,107 @@
 - **Anthropic — Claude Code best practices**: Explore → Plan → Code → Verify; tool design = ACI; avoid trust-then-verify gap
 - **Production RAG literature (2025)**: hybrid retrieval (BM25 + dense) + RRF fusion + cross-encoder reranking is the modern default
 
+---
+
+## Session 1 — May 18, 2026 — Full Implementation Sprint
+
+### What happened
+Single session implementation of the entire stack. Started fresh with new `backend/` directory layout, built all agents, CRAG subgraph, guardrails, API, and Next.js 15 frontend.
+
+### Backend implementation
+
+**Directory structure**: Created `backend/src/clouddash/` with proper package layout. Copied the KB and prompts from the AI-generated version, but rewrote all code from scratch.
+
+**Settings & configuration**:
+- `settings.py` with Pydantic v2 `BaseSettings`. Fixed `_REPO_ROOT` path computation (was `parents[4]`, needed `parents[3]`).
+- `models.py` with TypedDict state (GraphState), all Pydantic response models, enums for AgentType, CRAGPath, etc.
+- Added `next_route: str` field to GraphState to avoid MemorySaver deserialization issues with Pydantic models.
+
+**Providers**:
+- `gemini.py` — Google GenAI integration via `langchain-google-genai`. `with_structured_output()` for all agents.
+- `sarvam.py` — Sarvam AI via `langchain-openai` with `base_url="https://api.sarvam.ai/v1"`. Works with our langchain-core 0.3.x pinning.
+- `factory.py` — Groq via ChatOpenAI base_url trick (`https://api.groq.com/openai/v1`). langchain-groq requires core>=1.x which breaks 0.3.x. Fallback chain: nvidia → groq → google.
+
+**Orchestrator**:
+- `graph.py` — Main LangGraph with 8 nodes: language_detect, triage, technical, billing, knowledge, escalation, output_guard, END.
+- MemorySaver for checkpointing. `interrupt()` for HITL escalation.
+- Conditional edges: `_route_from_triage`, `_route_after_guard`. Fixed routing bug where `next_route` wasn't being reset by output_guard (LangGraph silently drops None updates). Now uses empty string `""` as sentinel.
+
+**CRAG subgraph** (`retrieval/crag_graph.py`):
+- 9 nodes: rewrite, parallel_retrieve, fuse, rerank, relevance_eval, supplement, web_fallback, done.
+- Parallel BM25 + dense retrieval. RRF fusion (k=60).
+- Cohere rerank (fallback to no-op if key missing).
+- LLM relevance eval (branch to supplement if <0.7, web if <0.3).
+- Fixed `asyncio.get_event_loop()` deprecation → `asyncio.to_thread()`.
+
+**Agents**:
+- All 5 agents with `with_structured_output()`. Typed response models.
+- `technical.py` — CRAG integration, citation generation, handover flags.
+- `billing.py` — CRM tool integration, refund autonomy (<$1k).
+- `knowledge.py` — KB lookup, feature request filing when gap detected.
+- `escalation.py` — `interrupt()` call, ticket draft generation.
+- `triage.py` — IntentClassification with confidence, sentiment, urgency.
+
+**Guardrails**:
+- `input.py` — LLM injection detection (`_InjectionCheck`), regex PII (email, phone, SSN), LLM PII fallback.
+- `output.py` — Grounding check via LLM (citation validity, hallucination detection), refusal consistency.
+- `pipeline.py` — Input + output guardrail composition.
+
+**Tools**:
+- `@tool` decorated: `crm_lookup`, `create_ticket`, `kb_search`, `feature_request`.
+
+**API** (`api/`):
+- FastAPI with SSE streaming (`StreamingResponse`).
+- Events: meta, node, token, chunks, final, handover, interrupt, done.
+- Fixed SSE event parsing — combined on_chain_end handlers, emit final/chunks from specialist nodes.
+- Added BM25 reload from ChromaDB at startup (in-memory index lost on restart).
+- HITL resume endpoint: `/api/hitl/{conversation_id}/resume`.
+
+### Frontend implementation
+
+**Stack**: Next.js 15 (App Router), shadcn/ui (manual component creation due to CLI issues), Tailwind CSS 4, Framer Motion, Zustand, Lucide icons.
+
+**Components**:
+- `Dashboard.tsx` — 3-column layout: agents/history (left), chat (center), trace/chunks/audit (right).
+- `StreamingMessage.tsx` — Typing indicator during structured output (raw JSON tokens hidden).
+- `HandoverBanner.tsx` — Animated banner showing agent handovers.
+- `CitationTooltip.tsx` — Hover tooltips for `[KB-XXX §N]` references.
+- `HITLApprovalDialog.tsx` — Full escalation approval UI with edit capability.
+- `TraceTimeline.tsx` — Live node timeline with latency.
+- `RetrievedChunks.tsx` — CRAG chunk display with relevance scores.
+- `AgentStatusPanel.tsx` — Active agent visualization.
+- `MessageInput.tsx` — Auto-resizing textarea with stop button.
+- `ScenarioButtons.tsx` — Quick test scenarios (S1–S4).
+
+**Store** (`store/conversation.ts`):
+- Zustand with messages, streaming state, trace nodes, retrieved chunks, handover history, current agent.
+
+**Hook** (`hooks/useStreamingChat.ts`):
+- SSE parser fixed (was double-buffering bug with `\n\n` split).
+
+### Bugs encountered and fixed
+
+1. **langchain-core version conflict**: langchain-nvidia and langchain-groq require core>=1.x, but langchain 0.3.x needs core<1.0. Pinned core to 0.3.x, wired NVIDIA/Groq through ChatOpenAI base_url.
+2. **BM25 in-memory loss**: BM25 index rebuilt on server restart via `_reload_bm25()` in lifespan.
+3. **Routing loop**: `next_route` not reset after output_guard. LangGraph drops None updates. Fixed by using empty string `""` as sentinel and explicit reset in output_guard.
+4. **MemorySaver Pydantic deserialization**: `last_response` becomes dict after checkpointing. Fixed by storing routing decision as simple `next_route` string.
+5. **SSE final event not firing**: Second `on_chain_end` branch was dead code. Combined handlers, emit final/chunks from specialist node completions.
+6. **Gemini quota exhausted**: 20 req/day free tier. Switched to Groq via ChatOpenAI for testing.
+7. **structlog add_logger_name incompatibility**: PrintLoggerFactory doesn't have `name` attribute. Removed processor.
+
+### Current state
+
+- Backend: Running on port 8001. SSE streaming verified (chunks + final events firing). CRAG pipeline working (rewrite → retrieve → fuse → rerank → eval → web).
+- Frontend: Running on port 3003. 3-column dashboard with trace timeline, handover banners, HITL dialog.
+- KB: 19 articles → 147 chunks ingested into ChromaDB.
+
+### Next steps
+
+- Update `.env.example` with new keys (SARVAM_API_KEY, COHERE_API_KEY, TAVILY_API_KEY, GROQ_API_KEY).
+- Deploy backend to Render (already configured in `render.yaml`).
+- Deploy frontend to Vercel.
+- Write evals (RAGAS + LLM-judge).
+
 ### Forensic read of the assignment — what they're really testing
 The brief is 8 pages. Every page has explicit asks AND implicit signals. The implicit signals are where most candidates lose points.
 

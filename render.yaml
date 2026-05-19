@@ -1,13 +1,10 @@
-# Render Blueprint — single-service deployment.
-# Push this repo, then "New Blueprint" in Render → it'll pick this file up.
-# Set NVIDIA_API_KEY (and optionally LANGCHAIN_API_KEY) in the dashboard.
-
 services:
   - type: web
-    name: clouddash-multi-agent
+    name: clouddash-api
     runtime: python
     plan: free
     pythonVersion: "3.13"
+    rootDir: backend
     buildCommand: |
       pip install --upgrade pip
       pip install -e .
@@ -16,56 +13,56 @@ services:
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.13.7
+      - key: PYTHONPATH
+        value: /opt/render/project/src/backend/src
       - key: APP_ENV
         value: production
       - key: LOG_LEVEL
         value: INFO
-      - key: HOST
-        value: 0.0.0.0
-      # ---- LLM provider (NVIDIA AI Endpoints) ----
       - key: LLM_PROVIDER
-        value: nvidia
-      - key: NVIDIA_API_KEY            # secret — set in Render dashboard
+        value: sarvam
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: SARVAM_API_KEY
+        sync: false
+      - key: COHERE_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
         sync: false
       - key: LLM_REASONING_MODEL
-        value: meta/llama-3.3-70b-instruct
+        value: sarvam-105b
       - key: LLM_FAST_MODEL
-        value: meta/llama-3.1-8b-instruct
+        value: sarvam-30b
       - key: LLM_JUDGE_MODEL
-        value: meta/llama-3.3-70b-instruct
+        value: sarvam-105b
       - key: LLM_TEMPERATURE
         value: "0.0"
       - key: LLM_TIMEOUT_SECONDS
-        value: "90"
+        value: "60"
       - key: LLM_MAX_RETRIES
-        value: "5"
-      # ---- Observability (optional) ----
+        value: "3"
       - key: LANGCHAIN_TRACING_V2
-        value: "false"
-      - key: LANGCHAIN_API_KEY         # secret — set in Render dashboard if enabling
+        value: "true"
+      - key: LANGCHAIN_API_KEY
         sync: false
       - key: LANGCHAIN_PROJECT
-        value: clouddash-multi-agent-prod
-      # ---- Retrieval ----
+        value: clouddash-multi-agent
+      - key: LANGCHAIN_ENDPOINT
+        value: https://api.smith.langchain.com
       - key: EMBEDDING_MODEL
         value: BAAI/bge-small-en-v1.5
       - key: CHROMA_PERSIST_DIR
         value: /var/data/chroma
       - key: RERANKER_TYPE
-        value: llm
+        value: cohere
       - key: RETRIEVAL_TOP_K_RERANKED
-        value: "4"
+        value: "5"
       - key: GROUNDING_MIN_SCORE
-        value: "0.25"
-      # ---- Guardrails ----
+        value: "0.3"
       - key: MAX_INPUT_LENGTH
         value: "4000"
-      - key: MAX_TURNS_PER_CONVERSATION
-        value: "20"
-      - key: SELF_CORRECTION_MAX_ATTEMPTS
-        value: "2"
+      - key: MOCK_CRM_PATH
+        value: /opt/render/project/src/backend/data/mock_customers.json
     disk:
       name: chroma-data
       mountPath: /var/data

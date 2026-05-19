@@ -1,0 +1,36 @@
+{
+  "customers": [
+    {
+      "customer_id": "cust_acme_42",
+      "org_name": "Acme Corp",
+      "plan": "pro",
+      "email": "ops@acme.example",
+      "billing_status": "active",
+      "invoices": [
+        {"id": "INV-2024-03", "amount": 149.00, "status": "paid", "date": "2024-03-01"},
+        {"id": "INV-2024-04", "amount": 149.00, "status": "paid", "date": "2024-04-01"},
+        {"id": "INV-2024-04-DUP", "amount": 149.00, "status": "paid", "date": "2024-04-01"}
+      ]
+    },
+    {
+      "customer_id": "cust_globex_99",
+      "org_name": "Globex Corporation",
+      "plan": "enterprise",
+      "email": "infra@globex.example",
+      "billing_status": "active",
+      "invoices": [
+        {"id": "INV-2024-04", "amount": 3200.00, "status": "paid", "date": "2024-04-01"}
+      ]
+    },
+    {
+      "customer_id": "cust_initech_7",
+      "org_name": "Initech LLC",
+      "plan": "starter",
+      "email": "it@initech.example",
+      "billing_status": "overdue",
+      "invoices": [
+        {"id": "INV-2024-03", "amount": 49.00, "status": "overdue", "date": "2024-03-01"}
+      ]
+    }
+  ]
+}

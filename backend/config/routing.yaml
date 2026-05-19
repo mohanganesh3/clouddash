@@ -1,0 +1,26 @@
+# =============================================================================
+# CloudDash — Routing Rules
+# =============================================================================
+# Maps the IntentCategory emitted by Triage to the AgentType that should
+# handle it. Editing this file is enough to change routing behavior — no
+# code changes needed.
+# =============================================================================
+
+intent_routing:
+  technical: technical          # alerts, integrations, dashboards, API, SSO/RBAC
+  billing: billing              # plans, invoices, refunds
+  account: technical            # SSO/RBAC live in technical agent's docs
+  general: knowledge            # feature comparisons, roadmap, supported providers
+  unknown: knowledge            # default: try knowledge agent
+
+# Fallback chain — used by handover/failover.py when an agent rejects a packet
+# or errors out. Tried in order. Last entry must always be 'escalation'.
+fallback_chain:
+  - triage                      # let Triage re-classify
+  - escalation                  # ultimate fallback: human handoff
+
+# Confidence thresholds — drive automatic escalation
+thresholds:
+  triage_confidence_for_specialist: 0.55   # below this, route to knowledge instead
+  specialist_confidence_for_response: 0.50 # below this, hand back to triage or escalate
+  grounding_min_score: 0.25                # mirror of settings.grounding_min_score

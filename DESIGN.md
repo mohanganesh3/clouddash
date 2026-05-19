@@ -261,3 +261,175 @@ The candidate has a Google Gemini API key. The JD does not mandate a specific LL
 ### Consequences
 - **Positive:** Free dev costs; native structured outputs; LangSmith-compatible; demonstrates LLM-agnostic design.
 - **Negative:** Slightly less mature agent tool-use vs. Claude. Mitigated by: explicit Pydantic validation + self-correction loop (already planned in ADR-005).
+
+---
+
+## ADR-010 — Real-Time Chat: Server-Sent Events (SSE) Streaming
+
+**Date:** 2026-05-18
+**Status:** Accepted
+
+### Context
+The original design called for a simple REST API with request/response. However, for a customer support chat interface, users expect real-time streaming responses (like ChatGPT). The assignment requires a "modern, responsive UI" and streaming is now a baseline expectation for AI chat.
+
+### Options considered
+| Option | Pros | Cons |
+|---|---|---|
+| Simple REST (request/response) | Easiest to implement | Poor UX; users wait for full response |
+| WebSocket (full duplex) | Bidirectional; real-time | Overkill for one-way streaming; more complex state management |
+| **Server-Sent Events (SSE)** | One-way streaming; HTTP-native; simple client; auto-reconnect | No bidirectional channel (not needed here) |
+
+### Decision
+**SSE streaming from FastAPI to Next.js frontend.**
+
+- Backend emits structured SSE events: `meta`, `node`, `token`, `chunks`, `final`, `handover`, `interrupt`, `done`.
+- Events carry JSON payloads with trace IDs, agent names, node latencies, tool calls, retrieved chunks, and handover context.
+- Frontend uses a custom React hook (`useStreamingChat.ts`) to parse SSE and update Zustand store in real-time.
+- Streaming UI shows typing indicators during generation and displays the final clean response from the `final` event.
+
+### Consequences
+- **Positive:** Modern UX matching ChatGPT; real-time visibility into agent routing and retrieval; excellent for demo.
+- **Negative:** More complex frontend state management. Mitigated by Zustand store and clean event schema.
+
+---
+
+## ADR-011 — CRAG as LangGraph Subgraph
+
+**Date:** 2026-05-18
+**Status:** Accepted
+
+### Context
+The original design called for a RAG pipeline function. However, CRAG (Corrective Retrieval Augmented Generation) is a more sophisticated approach that evaluates retrieval quality and supplements with web search when knowledge base coverage is insufficient. LangGraph supports subgraphs, allowing CRAG to be a first-class graph component.
+
+### Decision
+**CRAG implemented as a LangGraph subgraph with nodes:**
+
+1. `rewrite_query` — LLM rewrites user query using conversation history
+2. `retrieve_parallel` — Parallel BM25 + dense retrieval
+3. `fuse_rrf` — Reciprocal Rank Fusion of results
+4. `rerank_cohere` — Cohere Rerank API for final precision
+5. `grade_retrieval` — LLM evaluates if retrieved chunks are relevant
+6. `supplement_web` — Fallback to Tavily web search if retrieval insufficient
+7. `format_output` — Returns final chunks with scores and sources
+
+The subgraph is invoked from specialist agents via `invoke_crag_graph()` and returns retrieved chunks with CRAG path badges (e.g., "kb-rerank", "web-fallback").
+
+### Consequences
+- **Positive:** Sophisticated retrieval with quality evaluation; web fallback for out-of-KB queries; clean LangGraph integration; traceable in LangSmith.
+- **Negative:** More latency (multiple LLM calls). Acceptable for support use case.
+
+---
+
+## ADR-012 — LLM Provider Fallback Chain with ChatOpenAI base_url Trick
+
+**Date:** 2026-05-18
+**Status:** Accepted
+
+### Context
+During implementation, we encountered langchain-core version conflicts with langchain-nvidia and langchain-groq. These packages required langchain-core 0.2.x, but LangGraph required 0.3.x. We needed a way to use multiple providers without version conflicts.
+
+### Options considered
+| Option | Pros | Cons |
+|---|---|---|
+| Pin all to langchain-core 0.2.x | No conflicts | LangGraph may break; deprecated |
+| Pin all to langchain-core 0.3.x | Modern | Incompatible providers fail |
+| **ChatOpenAI base_url trick** | Works with any OpenAI-compatible API; single langchain-core version | Slightly hacky; relies on OpenAI client compatibility |
+
+### Decision
+**LLM factory with fallback chain using ChatOpenAI base_url for incompatible providers.**
+
+- Google Gemini: Native `langchain-google-genai` (compatible with 0.3.x)
+- Sarvam AI: `ChatOpenAI(base_url=SARVAM_BASE_URL, api_key=SARVAM_API_KEY)` — bypasses incompatible langchain-sarvam
+- Groq: `ChatOpenAI(base_url=GROQ_BASE_URL, api_key=GROQ_API_KEY)` — bypasses incompatible langchain-groq
+- NVIDIA: `ChatOpenAI(base_url=NVIDIA_BASE_URL, api_key=NVIDIA_API_KEY)` — bypasses incompatible langchain-nvidia
+
+Fallback chain: Google → Sarvam → Groq → NVIDIA. If one fails (quota, rate limit), automatically falls through to the next.
+
+### Consequences
+- **Positive:** Single langchain-core 0.3.x version; multi-provider resilience; no version conflicts.
+- **Negative:** Relies on OpenAI client compatibility with third-party APIs. Tested and verified working.
+
+---
+
+## ADR-013 — MemorySaver Compatibility: TypedDict State Instead of Pydantic
+
+**Date:** 2026-05-18
+**Status:** Accepted
+
+### Context
+LangGraph's MemorySaver checkpointing serializes graph state to disk. When using Pydantic models in the state, MemorySaver deserializes them to plain dicts, breaking type checks and attribute access. We encountered this with routing decisions stored as Pydantic enums.
+
+### Options considered
+| Option | Pros | Cons |
+|---|---|---|
+| Custom deserializer | Full Pydantic support | Complex; fragile across versions |
+| **TypedDict state** | Native MemorySaver support; simple | Less validation at runtime |
+| Store routing as strings | Quick fix | Lose type safety |
+
+### Decision
+**Graph state as TypedDict with Pydantic models for complex payloads.**
+
+- `GraphState` is a `TypedDict` with fields: `messages`, `last_response`, `handover_packet`, `next_route`, `retrieved_chunks`, `trace_id`.
+- Complex payloads (HandoverPacket, AgentResponse) remain Pydantic models but are stored as dicts in TypedDict.
+- Routing decisions stored as simple strings (`next_route: str`) to avoid deserialization issues.
+- Output guard resets `next_route` to empty string after each turn to prevent routing loops.
+
+### Consequences
+- **Positive:** MemorySaver works reliably; HITL resumption works; no deserialization bugs.
+- **Negative:** Less runtime type checking on state fields. Mitigated by Pydantic validation on input/output models.
+
+---
+
+## ADR-014 — Frontend: Next.js 15 + shadcn/ui + Zustand
+
+**Date:** 2026-05-18
+**Status:** Accepted
+
+### Context
+The original design called for a minimal HTMX UI. However, for a production-ready demo and to showcase full-stack capabilities, a modern React frontend with component library is more appropriate.
+
+### Options considered
+| Option | Pros | Cons |
+|---|---|---|
+| HTMX + simple HTML | Fastest to build; backend-only | Limited UI; hard to demonstrate modern skills |
+| **Next.js 15 + shadcn/ui** | Modern stack; excellent components; Vercel deployment | More code; requires React skills |
+| Vue + Nuxt | Similar to Next.js | Less familiar to most reviewers |
+
+### Decision
+**Next.js 15 with shadcn/ui components and Zustand state management.**
+
+- 3-column dashboard layout: agents panel, chat panel, trace/chunks/audit tabs.
+- Streaming chat with typing indicators and final response display.
+- Agent status panel with pulse animations showing active/used agents.
+- Handover banner with animated transitions.
+- HITL approval dialog for escalation scenarios.
+- Trace timeline showing node execution, latency, and tool calls.
+- Retrieved chunks panel with score bars and CRAG path badges.
+- Scenario buttons for quick testing of common support cases.
+- Dark-first theme with custom CSS variables.
+
+### Consequences
+- **Positive:** Production-ready UI; excellent demo experience; showcases full-stack skills; deployable to Vercel.
+- **Negative:** More frontend code to maintain. Worth it for the demo impact.
+
+---
+
+## ADR-015 — Multilingual Support: Sarvam AI Language Detection
+
+**Date:** 2026-05-18
+**Status:** Accepted
+
+### Context
+The original design was English-only. However, for a global SaaS product, multilingual support is a valuable feature. Sarvam AI offers affordable language detection and translation for Indian languages.
+
+### Decision
+**Language detection node in the orchestrator graph.**
+
+- `detect_language` node uses Sarvam AI API to detect user message language.
+- If non-English detected, emits a greeting in the detected language before routing.
+- Multilingual support currently limited to detection and greeting (full translation not implemented).
+- Sarvam provider integrated via ChatOpenAI base_url trick (ADR-012).
+
+### Consequences
+- **Positive:** Demonstrates internationalization awareness; easy to extend to full translation.
+- **Negative:** Adds API dependency. Mitigated by fallback chain.

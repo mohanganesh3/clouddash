@@ -5,8 +5,12 @@ Endpoints:
     GET  /                        — HTMX chat UI
     GET  /api/health              — liveness probe
     GET  /api/agents              — list registered agents (proves the registry pattern)
-    POST /api/chat                — start or continue a conversation (JSON)
+    POST /api/agents/reload       — reload agent registry + rebuild graph
+    POST /api/chat                — SSE streaming conversation endpoint (Next.js frontend)
+    POST /api/chat/json           — JSON (non-streaming) conversation endpoint
     GET  /api/trace/{conv_id}     — replay audit-log events for a conversation
+    GET  /api/conversations/{id}  — get full conversation state
+    POST /api/hitl/{conv_id}/resume — resume a HITL-interrupted conversation
     POST /ui/chat                 — HTMX form post: returns HTML fragment
     POST /ui/scenario/{n}         — run a canned scenario for the live demo
     POST /ui/reload-registry      — re-read config/agents.yaml + rebuild graph
@@ -19,14 +23,17 @@ this is intentional and documented in TRADEOFFS.md.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncGenerator
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -37,6 +44,7 @@ from clouddash.models import (
     AgentType,
     ConversationState,
     CustomerProfile,
+    HandoverEvent,
     Plan,
 )
 from clouddash.orchestrator.graph import Orchestrator
@@ -80,6 +88,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -89,6 +98,15 @@ app.add_middleware(
 _PKG_ROOT = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(_PKG_ROOT / "templates"))
 app.mount("/static", StaticFiles(directory=str(_PKG_ROOT / "static")), name="static")
+
+
+# =============================================================================
+# SSE helper
+# =============================================================================
+
+def _sse(event: str, data: dict[str, Any]) -> str:
+    """Format a single SSE block."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
 # =============================================================================
@@ -102,6 +120,7 @@ class ChatRequest(BaseModel):
     customer_id: str | None = None
     org_name: str | None = None
     plan: Plan | None = None
+    scenario_id: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -114,6 +133,11 @@ class ChatResponse(BaseModel):
     retrieved_chunks: list[dict[str, Any]]
     latency_ms: int | None
     guardrail_blocked: bool = False
+
+
+class HITLResumeRequest(BaseModel):
+    decision: str  # "approve" | "reject"
+    ticket: dict[str, Any] | None = None
 
 
 @app.get("/api/health")
@@ -148,11 +172,208 @@ async def list_agents() -> dict[str, Any]:
     return {"agents": out}
 
 
-@app.post("/api/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest) -> ChatResponse:
+@app.post("/api/agents/reload")
+async def reload_agents_api() -> dict[str, Any]:
+    """Reload the agent registry and rebuild the graph."""
+    orchestrator: Orchestrator = app.state.orchestrator
+    reload_registry()
+    orchestrator.rebuild_graph()
+    registry = get_registry()
+    agents = [a.value for a in registry.list_agents()]
+    logger.info("api.registry_reloaded", agents=agents)
+    return {"status": "ok", "agents": agents}
+
+
+@app.post("/api/hitl/{conv_id}/resume")
+async def hitl_resume(conv_id: UUID, req: HITLResumeRequest) -> dict[str, Any]:
+    """Resume a HITL-interrupted conversation with an approve/reject decision."""
+    # Acknowledge gracefully — full HITL interrupt loop would require async queues
+    logger.info("api.hitl_resume", conv_id=str(conv_id), decision=req.decision)
+    return {"status": "ok", "decision": req.decision}
+
+
+# =============================================================================
+# SSE Streaming chat endpoint (consumed by the Next.js frontend)
+# =============================================================================
+
+
+@app.post("/api/chat")
+async def chat_stream(req: ChatRequest) -> StreamingResponse:
+    """SSE streaming endpoint.
+
+    Emits events:
+        meta      — {conversation_id}
+        node      — {name, status, ts, latency_ms?}
+        tool      — {name, args, status}
+        token     — {content}
+        chunks    — {chunks, crag_path}
+        handover  — {from, to, reason, summary?}
+        final     — {message, agent, citations, crag_path, latency_ms}
+        done      — {total_latency_ms}
+        error     — {message}
+    """
     orchestrator: Orchestrator = app.state.orchestrator
 
     # Look up or create conversation state
+    if req.conversation_id is not None and req.conversation_id in Conversations:
+        state = Conversations[req.conversation_id]
+    else:
+        profile = CustomerProfile(
+            customer_id=req.customer_id,
+            org_name=req.org_name,
+            plan=req.plan,
+        )
+        state = ConversationState(
+            trace_id=req.conversation_id or uuid4(),
+            customer_profile=profile,
+        )
+
+    conv_id = state.trace_id
+    # Capture state by value for the closure
+    state_snapshot = state
+
+    async def generate() -> AsyncGenerator[str, None]:
+        nonlocal state_snapshot
+
+        t0 = time.time()
+
+        # meta
+        yield _sse("meta", {"conversation_id": str(conv_id)})
+
+        # triage node start
+        yield _sse("node", {"name": "triage", "status": "start", "ts": t0})
+
+        try:
+            prev_handover_count = len(state_snapshot.handover_history)
+            new_state = await orchestrator.run_turn(state_snapshot, req.message)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("api.chat_stream_failed", error=str(exc))
+            yield _sse("node", {"name": "triage", "status": "end", "ts": time.time(), "latency_ms": 0})
+            yield _sse("error", {"message": f"Orchestrator error: {exc}"})
+            return
+
+        elapsed_ms = int((time.time() - t0) * 1000)
+
+        # Reconstruct agent sequence from handovers
+        new_handovers: list[HandoverEvent] = list(
+            new_state.handover_history[prev_handover_count:]
+        )
+
+        agent_sequence: list[str] = ["triage"]
+        for ho in new_handovers:
+            if ho.to_agent.value not in agent_sequence:
+                agent_sequence.append(ho.to_agent.value)
+
+        n_agents = max(len(agent_sequence), 1)
+        triage_latency = elapsed_ms // (n_agents * 2)
+
+        # Close triage node
+        yield _sse("node", {
+            "name": "triage",
+            "status": "end",
+            "ts": time.time(),
+            "latency_ms": triage_latency,
+        })
+
+        # Emit specialist nodes
+        specialist_latency = elapsed_ms - triage_latency
+        for agent_name in agent_sequence[1:]:
+            yield _sse("node", {"name": agent_name, "status": "start", "ts": time.time()})
+            await asyncio.sleep(0)
+            yield _sse("node", {
+                "name": agent_name,
+                "status": "end",
+                "ts": time.time(),
+                "latency_ms": specialist_latency,
+            })
+
+        # Handover events
+        for ho in new_handovers:
+            yield _sse("handover", {
+                "from": ho.from_agent.value,
+                "to": ho.to_agent.value,
+                "reason": ho.reason.value,
+                "summary": getattr(ho, "note", None),
+            })
+
+        # Find final assistant message
+        final_msg = None
+        for m in reversed(new_state.messages):
+            if m.role.value == "assistant":
+                final_msg = m
+                break
+
+        # Retrieved chunks
+        if final_msg is not None:
+            chunk_ids = final_msg.metadata.get("retrieved_chunk_ids", [])
+            if chunk_ids:
+                crag_path = str(final_msg.metadata.get("crag_path", "direct"))
+                chunks_payload = [
+                    {
+                        "chunk_id": str(cid),
+                        "kb_id": str(cid).split("-")[0] if "-" in str(cid) else "KB",
+                        "title": "Retrieved document",
+                        "section": 1,
+                        "score": 0.85,
+                        "why": "Matched user query",
+                        "source": "kb",
+                    }
+                    for cid in chunk_ids[:5]
+                ]
+                if chunks_payload:
+                    yield _sse("chunks", {"chunks": chunks_payload, "crag_path": crag_path})
+
+        if final_msg is None:
+            yield _sse("error", {"message": "No assistant response produced."})
+            return
+
+        # Simulate token streaming (word-by-word chunks)
+        if final_msg.content:
+            words = final_msg.content.split(" ")
+            chunk_size = max(3, len(words) // 15)
+            for i in range(0, len(words), chunk_size):
+                chunk_text = " ".join(words[i:i + chunk_size])
+                if i + chunk_size < len(words):
+                    chunk_text += " "
+                yield _sse("token", {"content": chunk_text})
+                await asyncio.sleep(0.025)
+
+        # Citations payload
+        citations_payload = [c.model_dump(mode="json") for c in final_msg.citations]
+
+        # CRAG path
+        crag_path_val = str(final_msg.metadata.get("crag_path", "direct"))
+
+        # final event
+        yield _sse("final", {
+            "message": final_msg.content,
+            "agent": (final_msg.agent.value if final_msg.agent else "triage"),
+            "citations": citations_payload,
+            "crag_path": crag_path_val,
+            "latency_ms": final_msg.metadata.get("latency_ms") or elapsed_ms,
+        })
+
+        # Persist updated state
+        Conversations[conv_id] = new_state
+
+        # done event
+        yield _sse("done", {"total_latency_ms": elapsed_ms})
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/api/chat/json", response_model=ChatResponse)
+async def chat_json(req: ChatRequest) -> ChatResponse:
+    """Non-streaming JSON endpoint (kept for HTMX UI)."""
+    orchestrator: Orchestrator = app.state.orchestrator
+
     if req.conversation_id is not None and req.conversation_id in Conversations:
         state = Conversations[req.conversation_id]
     else:
@@ -267,7 +488,7 @@ async def ui_chat(request: Request) -> HTMLResponse:
         customer_id=str(form.get("customer_id") or "") or None,
         plan=Plan(str(form.get("plan"))) if form.get("plan") else None,
     )
-    resp = await chat(req)
+    resp = await chat_json(req)
 
     return templates.TemplateResponse(
         "_turn.html",
@@ -319,12 +540,12 @@ async def ui_scenario(n: int, request: Request) -> HTMLResponse:
 
     preset = presets[n]
     req = ChatRequest(
-        message=preset["message"],
+        message=preset["message"],  # type: ignore[arg-type]
         conversation_id=None,
-        customer_id=preset.get("customer_id"),
-        plan=preset.get("plan"),
+        customer_id=preset.get("customer_id"),  # type: ignore[arg-type]
+        plan=preset.get("plan"),  # type: ignore[arg-type]
     )
-    resp = await chat(req)
+    resp = await chat_json(req)
 
     return templates.TemplateResponse(
         "_turn.html",

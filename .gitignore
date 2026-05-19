@@ -1,4 +1,4 @@
-# Secrets — NEVER commit
+# Secrets - NEVER commit
 .env
 .env.local
 .env.*.local
@@ -18,8 +18,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -39,6 +39,12 @@ ENV/
 
 # uv
 .uv/
+
+# Node / Next
+node_modules/
+.next/
+out/
+*.tsbuildinfo
 
 # IDE
 .vscode/
@@ -68,6 +74,8 @@ logs/
 # Vector store persistence (large, regenerable)
 chroma_db/
 data/chroma/
+backend/data/chroma/
+backend/data/graph_checkpoints.sqlite*
 .cache/
 .huggingface/
 .transformers_cache/
@@ -75,14 +83,7 @@ data/chroma/
 # Generated artifacts
 EVAL_RESULTS_RAW.json
 
-# Model caches
-~/.cache/huggingface/
-
 # OS
 Thumbs.db
 ehthumbs.db
 Desktop.ini
-
-# Misc
-node_modules/
-*.tsbuildinfo
