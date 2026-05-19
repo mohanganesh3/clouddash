@@ -24,7 +24,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
-from clouddash.logging_setup import configure_logging
+from clouddash.logging_setup import setup_logging
 from clouddash.models import (
     AgentType,
     ConversationState,
@@ -124,7 +124,7 @@ def chat(
     plan: Optional[Plan] = typer.Option(None, "--plan"),
 ) -> None:
     """Interactive REPL. Type 'exit' or Ctrl-D to quit."""
-    configure_logging(level="WARNING", json_format=False)
+    setup_logging(log_level="WARNING")
     console.rule("[bold cyan]CloudDash Chat")
     console.print(
         "[dim]Tip: this is a fresh conversation. State is in-memory; "

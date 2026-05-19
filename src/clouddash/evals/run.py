@@ -24,7 +24,7 @@ from rich.console import Console
 from rich.table import Table
 
 from clouddash.evals.judge import judge_scenario
-from clouddash.logging_setup import configure_logging, get_logger
+from clouddash.logging_setup import setup_logging, get_logger
 from clouddash.models import (
     AgentType,
     Citation,
@@ -382,7 +382,7 @@ async def amain(
     output_path: Path,
     json_out_path: Path,
 ) -> int:
-    configure_logging(level="WARNING", json_format=False)
+    setup_logging(log_level="WARNING")
     settings = get_settings()
     settings.ensure_directories()
 

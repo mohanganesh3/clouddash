@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 
-from clouddash.logging_setup import configure_logging, get_logger
+from clouddash.logging_setup import setup_logging, get_logger
 from clouddash.models import (
     AgentType,
     ConversationState,
@@ -178,7 +178,7 @@ async def run_scenario(orchestrator: Orchestrator, scenario: _Scenario, console:
 
 
 async def amain(scenario_id: int | None) -> int:
-    configure_logging(level="WARNING", json_format=False)
+    setup_logging(log_level="WARNING")
     console = Console()
     console.rule("[bold]CloudDash Orchestrator Smoke Test")
 

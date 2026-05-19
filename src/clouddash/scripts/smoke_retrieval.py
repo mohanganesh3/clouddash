@@ -16,7 +16,7 @@ from typing import NamedTuple
 from rich.console import Console
 from rich.table import Table
 
-from clouddash.logging_setup import configure_logging
+from clouddash.logging_setup import setup_logging
 from clouddash.models import ConversationState, Message, MessageRole
 from clouddash.retrieval.retriever import Retriever
 
@@ -65,7 +65,7 @@ SCENARIOS: list[_Scenario] = [
 
 
 def main() -> int:
-    configure_logging(level="WARNING", json_format=False)
+    setup_logging(log_level="WARNING")
     console = Console()
     retriever = Retriever()
 
