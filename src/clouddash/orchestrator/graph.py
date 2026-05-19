@@ -1,444 +1,356 @@
-"""LangGraph orchestrator — wires registered agents into a state machine.
+"""Main orchestrator graph.
 
-Per ADR-001: the graph is built from `config/agents.yaml` at startup. The
-orchestrator code does NOT name any specific agent — it iterates over the
-registry. This is what makes the live "add new agent" demo work.
+Builds the LangGraph StateGraph from the agent registry.
+Adding a new agent = YAML entry + one file. Nothing here changes.
 
-State flow:
-    START → triage → conditional_routing → [specialist or escalation]
-                                          ↓
-                          [more handovers possible]
-                                          ↓
-                                         END
+Key LangGraph features used:
+- SqliteSaver checkpointing — conversations persist across requests (thread_id = convo_id)
+- interrupt() in EscalationAgent — graph pauses, frontend shows HITL dialog, resumes via Command
+- Conditional edges — driven by agent LLM output, not hardcoded strings
+- sub-graph composition — CRAG is a sub-graph called from within agent nodes
+- astream_events() for SSE streaming — every token + node event emitted to frontend
 
-State updates per turn:
-- `messages`: appended via reducer
-- `handover_history`: appended via reducer
-- `current_agent`, `last_response`, `pending_handover`: replaced
-
-Failure handling: if an agent raises, the orchestrator routes to the
-fallback chain (handover.failover.next_fallback).
+May 16: LangGraph's checkpointer expects thread_id in config['configurable']['thread_id'],
+NOT in state. Spent an hour debugging why memory wasn't persisting across requests.
 """
-
 from __future__ import annotations
 
+import sqlite3
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.errors import GraphInterrupt
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
 
 from clouddash.agents.registry import AgentRegistry, get_registry
-from clouddash.exceptions import HandoverChainExhaustedError
-from clouddash.guardrails import (
-    build_blocked_input_response,
-    evaluate_input,
-    evaluate_output,
-)
-from clouddash.handover.audit import (
-    log_handover_failed,
-    read_trace_events,
-)
-from clouddash.handover.failover import next_fallback
+from clouddash.guardrails import build_blocked_response, evaluate_input, evaluate_output
 from clouddash.logging_setup import get_logger, set_trace_context, write_audit_event
-from clouddash.models import (
-    AgentResponse,
-    AgentType,
-    ConversationState,
-    HandoverEvent,
-    HandoverStatus,
-    Message,
-    MessageRole,
-)
-
-if TYPE_CHECKING:
-    from langgraph.graph.state import CompiledStateGraph
+from clouddash.models import AgentResponse, AgentType, CustomerProfile, GraphState, IntentCategory, IntentClassification, Plan, make_initial_state
+from clouddash.multilingual.sarvam_detect import detect_language
+from clouddash.settings import get_settings
 
 logger = get_logger(__name__)
 
 
 class Orchestrator:
-    """The orchestrator owns the LangGraph state graph and runs turns through it."""
-
     def __init__(self, registry: AgentRegistry | None = None) -> None:
         self.registry = registry or get_registry()
-        self._graph: CompiledStateGraph | None = None
+        cfg = get_settings()
+        cfg.ensure_dirs()
+        self._checkpoint_conn = None
+        self._checkpointer = self._build_checkpointer(cfg.graph_checkpoint_path)
+        self._graph = self._build()
 
-    @property
-    def graph(self) -> CompiledStateGraph:
-        if self._graph is None:
-            self._graph = self._build_graph()
-        return self._graph
+    def _build_checkpointer(self, path: str):
+        """Use async SQLite under FastAPI; keep sync construction usable for smoke tests."""
+        try:
+            import asyncio
+            asyncio.get_running_loop()
+        except RuntimeError:
+            self._checkpoint_conn = sqlite3.connect(path, check_same_thread=False)
+            checkpointer = SqliteSaver(self._checkpoint_conn)
+            checkpointer.setup()
+            return checkpointer
 
-    def rebuild_graph(self) -> None:
-        """Force the graph to be rebuilt from the current registry. Used by the
-        live 'add new agent' demo: edit YAML → reload registry → rebuild graph."""
-        self._graph = None
+        import aiosqlite
+        self._checkpoint_conn = aiosqlite.connect(path)
+        return AsyncSqliteSaver(self._checkpoint_conn)
 
-    # -------------------------------------------------------------------------
-    # Graph construction
-    # -------------------------------------------------------------------------
+    def _build(self):
+        g = StateGraph(GraphState)
 
-    def _build_graph(self) -> CompiledStateGraph:
-        from langgraph.graph import END, START, StateGraph
+        # language detection node — first thing that runs for new conversations
+        g.add_node("language_detect", self._language_detect_node)
 
-        graph: StateGraph = StateGraph(ConversationState)
+        # triage always runs after language detection
+        g.add_node("triage", self._make_agent_node(AgentType.TRIAGE))
 
-        agent_types = self.registry.list_agents()
+        # specialist nodes
+        for atype in [AgentType.TECHNICAL, AgentType.BILLING, AgentType.KNOWLEDGE, AgentType.ESCALATION]:
+            if atype in self.registry.list_agents():
+                g.add_node(atype.value, self._make_agent_node(atype))
 
-        # Add a node per registered agent
-        for atype in agent_types:
-            graph.add_node(atype.value, self._make_node(atype))
+        # guardrails wrapper node — runs after each specialist
+        g.add_node("output_guard", self._output_guard_node)
 
-        # Entry: always Triage
-        if AgentType.TRIAGE not in agent_types:
-            raise ValueError("Triage agent must be registered (it's the entry node)")
-        graph.add_edge(START, AgentType.TRIAGE.value)
+        g.add_edge(START, "language_detect")
+        g.add_edge("language_detect", "triage")
 
-        # Conditional routing from every agent — driven by `last_response.next_agent`
-        node_map: dict[str, str] = {atype.value: atype.value for atype in agent_types}
-        node_map["END"] = END
+        # triage routes to specialist
+        g.add_conditional_edges("triage", self._route_from_triage, {
+            "technical": "technical",
+            "billing": "billing",
+            "knowledge": "knowledge",
+            "escalation": "escalation",
+            END: END,
+        })
 
-        for atype in agent_types:
-            graph.add_conditional_edges(
-                atype.value,
-                self._route_after_agent,
-                node_map,
-            )
+        # each specialist → output guard
+        for atype in [AgentType.TECHNICAL, AgentType.BILLING, AgentType.KNOWLEDGE]:
+            if atype.value in [n for n in g.nodes]:
+                g.add_edge(atype.value, "output_guard")
 
-        compiled = graph.compile()
-        logger.info(
-            "orchestrator.graph_built",
-            agents=[a.value for a in agent_types],
-            entry="triage",
-        )
-        return compiled
+        # escalation goes straight to END (interrupt handles the pause/resume)
+        g.add_edge("escalation", END)
 
-    def _make_node(self, agent_type: AgentType):
-        """Return an async LangGraph node function for the given agent."""
+        # after guard: either done or hand to another specialist
+        g.add_conditional_edges("output_guard", self._route_after_guard, {
+            "technical": "technical",
+            "billing": "billing",
+            "knowledge": "knowledge",
+            "escalation": "escalation",
+            END: END,
+        })
 
-        async def node(state: ConversationState) -> dict[str, Any]:
+        return g.compile(checkpointer=self._checkpointer)
+
+    async def _language_detect_node(self, state: GraphState) -> dict:
+        # only run on turn 1 — don't re-detect every message
+        if state.get("greeting_sent") or state.get("turn_id", 0) > 1:
+            return {}
+
+        msgs = state.get("messages", [])
+        if not msgs:
+            return {}
+
+        last = msgs[-1]
+        text = last.content if hasattr(last, "content") else ""
+        if not text:
+            return {}
+
+        detection = await detect_language(text)
+        update: dict = {"language_detection": detection}
+
+        if detection.is_indian_language and detection.greeting and not state.get("greeting_sent"):
+            update["messages"] = [AIMessage(content=detection.greeting, name="system")]
+            update["greeting_sent"] = True
+
+        return update
+
+    def _make_agent_node(self, atype: AgentType):
+        async def node(state: GraphState) -> dict:
             set_trace_context(
-                trace_id=str(state.trace_id),
-                turn_id=state.turn_id,
-                agent=agent_type.value,
+                trace_id=state.get("trace_id", ""),
+                turn_id=state.get("turn_id", 0),
+                agent=atype.value,
             )
-            agent = self.registry.get(agent_type)
+            agent = self.registry.get(atype)
             t0 = time.time()
-
             try:
                 response: AgentResponse = await agent.handle(state)
-            except Exception as exc:  # noqa: BLE001
-                response = self._handle_agent_exception(state, agent_type, exc, t0)
+            except GraphInterrupt:
+                raise
+            except Exception as exc:
+                logger.exception("agent_node_failed", agent=atype.value, error=str(exc))
+                fallback = self.registry.next_fallback(atype, tried={atype})
+                return {
+                    "current_agent": atype,
+                    "last_response": AgentResponse(
+                        agent=atype,
+                        next_agent=fallback,
+                        confidence=0.1,
+                        metadata={"error": str(exc)},
+                    ),
+                    "next_route": fallback.value if fallback else "",
+                }
 
-            # ---- Output guardrails + single self-correction --------------
-            # Only run on KB-grounded agents that produced text. Skip:
-            #   - handover-only / empty-text responses
-            #   - non-KB agents (Triage, Escalation) — their outputs are
-            #     classification or ticket acks and aren't expected to cite.
-            cfg = self.registry.get_config(agent_type)
-            if (
-                response.response_text
-                and response.retrieved_chunks is not None
-                and cfg.requires_kb
-            ):
-                decision = evaluate_output(
-                    response.response_text,
-                    response.retrieved_chunks,
+            latency = int((time.time() - t0) * 1000)
+            response.latency_ms = latency
+
+            write_audit_event(
+                "agent.completed",
+                agent=atype.value,
+                latency_ms=latency,
+                next_agent=response.next_agent.value if response.next_agent else None,
+                has_handover=response.handover_packet is not None,
+            )
+
+            update: dict[str, Any] = {
+                "current_agent": atype,
+                "last_response": response,
+                "retrieved_chunks": response.retrieved_chunks,
+                "crag_path": response.crag_path,
+            }
+
+            if atype == AgentType.TRIAGE:
+                update.update(self._triage_context_update(state, response))
+
+            if response.response_text:
+                update["messages"] = [AIMessage(
+                    content=response.response_text,
+                    name=atype.value,
+                    additional_kwargs={
+                        "citations": [c.model_dump() for c in response.citations],
+                        "agent": atype.value,
+                        "latency_ms": latency,
+                        "crag_path": response.crag_path.value if response.crag_path else None,
+                    },
+                )]
+
+            # store routing as a simple string — checkpoint serializers can turn Pydantic
+            # models to dicts, so reading resp.next_agent after checkpointing fails.
+            # Use empty string for "no handover" — LangGraph may drop None updates
+            update["next_route"] = response.next_agent.value if response.next_agent else ""
+
+            if response.handover_packet:
+                update["pending_handover"] = response.handover_packet
+                hchain = list(state.get("handover_chain") or [])
+                hchain.append(response.handover_packet)
+                update["handover_chain"] = hchain
+                write_audit_event(
+                    "handover.emitted",
+                    from_agent=atype.value,
+                    to_agent=response.next_agent.value if response.next_agent else None,
+                    reason=response.handover_packet.reason.value,
                 )
-                if decision.action == "self_correct":
-                    logger.info(
-                        "orchestrator.self_correcting",
-                        agent=agent_type.value,
-                        failures=[r.guardrail_name for r in decision.failures],
-                    )
-                    response = await self._self_correct(
-                        agent, agent_type, state, decision.correction_hint, t0
-                    )
 
-            response.latency_ms = int((time.time() - t0) * 1000)
-            return self._response_to_state_update(state, response)
+            return update
 
-        node.__name__ = f"node_{agent_type.value}"
+        node.__name__ = f"node_{atype.value}"
         return node
 
-    # -------------------------------------------------------------------------
-    # Agent exception fallback + guardrail self-correction
-    # -------------------------------------------------------------------------
+    def _triage_context_update(self, state: GraphState, response: AgentResponse) -> dict[str, Any]:
+        metadata = response.metadata or {}
+        entities = metadata.get("entities") or {}
+        update: dict[str, Any] = {}
 
-    def _handle_agent_exception(
-        self,
-        state: ConversationState,
-        agent_type: AgentType,
-        exc: Exception,
-        t0: float,
-    ) -> AgentResponse:
-        """Build a synthetic failover handover when an agent raises."""
-        from clouddash.models import HandoverPacket, HandoverReason
+        intent = metadata.get("intent")
+        if intent in IntentCategory._value2member_map_:
+            update["intent"] = IntentCategory(intent)
 
-        latency = int((time.time() - t0) * 1000)
-        logger.exception(
-            "orchestrator.agent_failed",
-            agent=agent_type.value,
-            error=str(exc),
-            error_type=type(exc).__name__,
-            latency_ms=latency,
-        )
-        fallback = next_fallback(
-            agent_type,
-            already_tried={
-                e.from_agent for e in state.handover_history
-            } | {agent_type},
-        )
-        if fallback is None:
-            raise HandoverChainExhaustedError(
-                "All fallback agents exhausted",
-                context={"failed_agent": agent_type.value},
-                cause=exc,
-            ) from exc
+        classification = metadata.get("classification")
+        if classification:
+            update["intent_classification"] = IntentClassification(**classification)
 
-        log_handover_failed(
-            packet_id=(
-                state.pending_handover.packet_id
-                if state.pending_handover
-                else state.trace_id
-            ),
-            error=str(exc),
-            next_target=fallback,
-        )
+        existing = state.get("customer_profile") or CustomerProfile()
+        profile_data = existing.model_dump() if hasattr(existing, "model_dump") else dict(existing)
 
-        synthetic = HandoverPacket(
-            trace_id=state.trace_id,
-            turn_id=state.turn_id,
-            from_agent=agent_type,
-            to_agent=fallback,
-            reason=HandoverReason.TARGET_REJECTED,
-            user_intent=(
-                state.pending_handover.user_intent
-                if state.pending_handover
-                else "Recovering from agent failure."
-            ),
-            conversation_summary=(
-                f"{agent_type.value} agent failed: {exc}. "
-                f"Falling back to {fallback.value}."
-            ),
-            customer_profile=state.customer_profile,
-            confidence_state=0.1,
-        )
-        return AgentResponse(
-            agent=agent_type,
-            response_text="",
-            confidence=0.1,
-            handover_packet=synthetic,
-            next_agent=fallback,
-            metadata={"failover": True, "error": str(exc)},
-        )
+        if customer_id := entities.get("customer_id"):
+            profile_data["customer_id"] = str(customer_id)
+        if org_name := entities.get("org_name"):
+            profile_data["org_name"] = str(org_name)
+        if plan := entities.get("plan"):
+            plan_value = str(plan).lower()
+            if plan_value in Plan._value2member_map_:
+                profile_data["plan"] = Plan(plan_value)
 
-    async def _self_correct(
-        self,
-        agent,
-        agent_type: AgentType,
-        state: ConversationState,
-        correction_hint: str | None,
-        t0: float,
-    ) -> AgentResponse:
-        """Re-call the agent ONCE with a corrective hint inlined into the
-        most recent user message. We don't loop further — if the second
-        attempt still fails, we accept the response and log a warning so
-        the user is never left in an infinite-retry hole."""
-        if not correction_hint:
-            return await agent.handle(state)
+        update["customer_profile"] = CustomerProfile(**profile_data)
+        return update
 
-        # Inline the hint into the latest user message so agents that already
-        # use state.latest_user_message() pick it up without code changes.
-        new_messages: list[Message] = list(state.messages)
-        for i in range(len(new_messages) - 1, -1, -1):
-            m = new_messages[i]
-            if m.role == MessageRole.USER:
-                new_messages[i] = m.model_copy(
-                    update={
-                        "content": (
-                            f"{m.content}\n\n[INTERNAL — NOT USER VISIBLE]\n"
-                            f"{correction_hint}"
-                        ),
-                    }
-                )
-                break
+    async def _output_guard_node(self, state: GraphState) -> dict:
+        resp = state.get("last_response")
+        if not resp:
+            return {}
+        # checkpoint serializers may deserialize to dict — handle both cases
+        text = resp.response_text if hasattr(resp, "response_text") else (resp.get("response_text") if isinstance(resp, dict) else "")
+        chunks = resp.retrieved_chunks if hasattr(resp, "retrieved_chunks") else (resp.get("retrieved_chunks") or [])
+        if not text:
+            return {}
 
-        corrected_state = state.model_copy(update={"messages": new_messages})
-        try:
-            response = await agent.handle(corrected_state)
-        except Exception as exc:  # noqa: BLE001
-            return self._handle_agent_exception(state, agent_type, exc, t0)
+        decision = evaluate_output(text, chunks)
+        if decision.action == "self_correct":
+            write_audit_event("guardrail.self_correct", failures=decision.failures)
+            logger.warning("output_guard.correction_needed", failures=decision.failures)
 
-        # Re-evaluate; if still failing, accept and warn.
-        if response.response_text and response.retrieved_chunks is not None:
-            second = evaluate_output(response.response_text, response.retrieved_chunks)
-            if not second.passed:
-                logger.warning(
-                    "orchestrator.self_correction_did_not_pass",
-                    agent=agent_type.value,
-                    failures=[r.guardrail_name for r in second.failures],
-                )
-                write_audit_event(
-                    "guardrail.output.self_correction_failed",
-                    agent=agent_type.value,
-                    failures=[r.guardrail_name for r in second.failures],
-                )
-        return response
-
-    def _response_to_state_update(
-        self,
-        state: ConversationState,
-        response: AgentResponse,
-    ) -> dict[str, Any]:
-        """Convert an AgentResponse into a partial-state dict for LangGraph."""
-        updates: dict[str, Any] = {
-            "current_agent": response.agent,
-            "last_response": response,
-        }
-
-        # Append assistant message if the agent produced text
-        new_messages: list[Message] = []
-        if response.response_text:
-            new_messages.append(
-                Message(
-                    role=MessageRole.ASSISTANT,
-                    content=response.response_text,
-                    agent=response.agent,
-                    turn_id=state.turn_id,
-                    citations=response.citations,
-                    metadata={
-                        "retrieved_chunk_ids": [c.chunk_id for c in response.retrieved_chunks],
-                        "confidence": response.confidence,
-                        "latency_ms": response.latency_ms,
-                    },
-                )
-            )
-        if new_messages:
-            updates["messages"] = new_messages
-
-        # Handover handling
-        if response.handover_packet is not None:
-            updates["pending_handover"] = response.handover_packet
-            # Append the latest event from the audit chain (the new handover)
-            new_event = response.handover_packet.audit_chain[-1] if response.handover_packet.audit_chain else None
-            if new_event is not None:
-                # Mark accepted (will be set to ACCEPTED when the receiving agent acknowledges)
-                updates["handover_history"] = [
-                    new_event.model_copy(update={"status": HandoverStatus.PENDING})
-                ]
-        elif response.escalate or response.response_text:
-            # Terminal — clear any pending handover
-            updates["pending_handover"] = None
-
-        return updates
-
-    @staticmethod
-    def _route_after_agent(state: ConversationState) -> str:
-        """Conditional edge: where to go after an agent node executes."""
-        resp = state.last_response
-        if resp is None:
-            return "END"
-        if resp.next_agent is not None:
-            return resp.next_agent.value
-        # No handover: either text response or escalation → END
-        return "END"
-
-    # -------------------------------------------------------------------------
-    # Public API — run a turn
-    # -------------------------------------------------------------------------
-
-    async def run_turn(
-        self,
-        state: ConversationState,
-        user_message: str,
-    ) -> ConversationState:
-        """Process one user turn through the full graph. Returns updated state."""
-        next_turn = state.turn_id + 1
-        set_trace_context(trace_id=str(state.trace_id), turn_id=next_turn)
-
-        # ---- Input guardrails (Layer 1) ---------------------------------
-        in_decision = evaluate_input(user_message)
-        if not in_decision.is_allowed:
-            # Block the turn entirely. Never feed flagged input to an LLM.
-            refusal = build_blocked_input_response(in_decision)
-            user_msg = Message(role=MessageRole.USER, content=user_message, turn_id=next_turn)
-            assistant_msg = Message(
-                role=MessageRole.ASSISTANT,
-                content=refusal,
-                agent=AgentType.TRIAGE,  # block is logically a Triage refusal
-                turn_id=next_turn,
-                metadata={
-                    "guardrail_blocked": True,
-                    "blocked_by": (
-                        in_decision.blocked_by.guardrail_name
-                        if in_decision.blocked_by
-                        else "unknown"
-                    ),
-                },
-            )
-            blocked_response = AgentResponse(
-                agent=AgentType.TRIAGE,
-                response_text=refusal,
-                confidence=1.0,
-                metadata={"guardrail_blocked": True},
-            )
-            logger.info(
-                "orchestrator.input_blocked",
-                trace_id=str(state.trace_id),
-                turn_id=next_turn,
-                blocked_by=(
-                    in_decision.blocked_by.guardrail_name
-                    if in_decision.blocked_by
-                    else None
-                ),
-            )
-            return state.model_copy(
-                update={
-                    "turn_id": next_turn,
-                    "messages": [*state.messages, user_msg, assistant_msg],
-                    "last_response": blocked_response,
-                }
-            )
-
-        # Use the (possibly redacted) sanitized text as the user message content.
-        sanitized = in_decision.sanitized_text
-        user_msg = Message(role=MessageRole.USER, content=sanitized, turn_id=next_turn)
-
-        # Build initial state for this turn
-        starting_state = state.model_copy(
-            update={
-                "turn_id": next_turn,
-                "messages": [*state.messages, user_msg],
-            }
-        )
-
-        logger.info(
-            "orchestrator.turn_start",
-            trace_id=str(state.trace_id),
-            turn_id=next_turn,
-            user_message_preview=sanitized[:120],
-            input_redacted=in_decision.was_redacted,
-        )
-
-        t0 = time.time()
-        result = await self.graph.ainvoke(starting_state)
-        # LangGraph returns either a dict or a ConversationState depending on version
-        if isinstance(result, dict):
-            final_state = ConversationState(**result)
+        if hasattr(resp, "next_agent"):
+            has_handover = resp.next_agent is not None
+        elif isinstance(resp, dict):
+            has_handover = bool(resp.get("next_agent") or resp.get("handover_packet"))
         else:
-            final_state = result
+            has_handover = False
 
-        elapsed_ms = int((time.time() - t0) * 1000)
-        logger.info(
-            "orchestrator.turn_done",
-            trace_id=str(state.trace_id),
-            turn_id=next_turn,
-            final_agent=final_state.current_agent.value,
-            messages=len(final_state.messages),
-            handovers=len(final_state.handover_history),
-            elapsed_ms=elapsed_ms,
+        # Terminal responses must not re-dispatch; handovers must preserve next_route.
+        return {} if has_handover else {"next_route": ""}
+
+    def _route_from_triage(self, state: GraphState) -> str:
+        route = state.get("next_route")
+        return route if route else END
+
+    def _route_after_guard(self, state: GraphState) -> str:
+        route = state.get("next_route") or ""
+        # allow specialist-to-specialist handovers (not back to triage)
+        valid = {"technical", "billing", "knowledge", "escalation"}
+        return route if route in valid else END
+
+    def _make_config(self, conversation_id: str) -> dict:
+        # thread_id in configurable — this is what the checkpointer keys on
+        return {"configurable": {"thread_id": conversation_id}}
+
+    async def run_turn(self, conversation_id: str, user_message: str) -> GraphState:
+        config = self._make_config(conversation_id)
+
+        # input guardrails before anything touches an LLM
+        decision = evaluate_input(user_message)
+        if not decision.is_allowed:
+            blocked_msg = build_blocked_response(decision)
+            # still update the graph state so conversation history is preserved
+            current = await self._graph.aget_state(config)
+            input_state = make_initial_state(conversation_id) if not current.values else {}
+            input_state.update({"messages": [HumanMessage(content=user_message)], "turn_id": 1})
+            await self._graph.ainvoke(
+                input_state,
+                config=config,
+            )
+            return {"__blocked__": True, "__blocked_msg__": blocked_msg}  # type: ignore
+
+        sanitized = decision.sanitized_text
+        current = await self._graph.aget_state(config)
+        turn = (current.values.get("turn_id", 0) if current.values else 0) + 1
+        input_state = make_initial_state(conversation_id) if not current.values else {}
+        input_state.update({"messages": [HumanMessage(content=sanitized)], "turn_id": turn})
+
+        result = await self._graph.ainvoke(
+            input_state,
+            config=config,
         )
-        return final_state
+        return result
 
-    def get_trace(self, trace_id) -> list[dict[str, Any]]:
-        """Read back the audit-log events for a given conversation."""
-        return read_trace_events(trace_id)
+    async def stream_turn(self, conversation_id: str, user_message: str):
+        """Yield astream_events for SSE endpoint. Each event maps to a frontend update."""
+        config = self._make_config(conversation_id)
+        decision = evaluate_input(user_message)
+        if not decision.is_allowed:
+            yield {"event": "blocked", "data": {"message": build_blocked_response(decision)}}
+            return
+
+        sanitized = decision.sanitized_text
+        current = await self._graph.aget_state(config)
+        turn = (current.values.get("turn_id", 0) if current.values else 0) + 1
+        input_state = make_initial_state(conversation_id) if not current.values else {}
+        input_state.update({"messages": [HumanMessage(content=sanitized)], "turn_id": turn})
+
+        async for event in self._graph.astream_events(
+            input_state,
+            config=config,
+            version="v2",
+        ):
+            yield event
+
+    async def resume_hitl(self, conversation_id: str, decision: Any) -> GraphState:
+        """Resume a graph that was paused at interrupt() in EscalationAgent."""
+        config = self._make_config(conversation_id)
+        result = await self._graph.ainvoke(Command(resume=decision), config=config)
+        return result
+
+    async def get_state(self, conversation_id: str) -> dict:
+        config = self._make_config(conversation_id)
+        state = await self._graph.aget_state(config)
+        return state.values if state.values else {}
+
+    def rebuild(self) -> None:
+        self.registry.reload()
+        self._graph = self._build()
+
+
+_ORCHESTRATOR: Orchestrator | None = None
+
+
+def get_orchestrator() -> Orchestrator:
+    global _ORCHESTRATOR
+    if _ORCHESTRATOR is None:
+        _ORCHESTRATOR = Orchestrator()
+    return _ORCHESTRATOR

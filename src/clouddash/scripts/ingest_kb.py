@@ -1,74 +1,56 @@
-"""KB ingestion script.
+"""KB ingestion — loads markdown articles, chunks them, embeds into ChromaDB.
 
-Usage:
-    python -m clouddash.scripts.ingest_kb           # incremental upsert
-    python -m clouddash.scripts.ingest_kb --rebuild  # drop + re-embed everything
-
-Reads `knowledge_base/**/*.md`, parses frontmatter, chunks with the markdown-
-aware section splitter, embeds with `bge-small-en-v1.5`, and persists to
-ChromaDB at `data/chroma/`.
+Rough script. It works. Ship it.
+Run: python -m clouddash.scripts.ingest_kb [--rebuild]
 """
-
 from __future__ import annotations
 
 import argparse
 import sys
 import time
 
-from clouddash.logging_setup import configure_logging, get_logger
-from clouddash.retrieval.chunker import chunk_articles
 from clouddash.retrieval.loader import load_articles
-from clouddash.retrieval.vector_store import VectorStore
+from clouddash.retrieval.chunker import chunk_article
+from clouddash.retrieval.vector_store import add_chunks, get_vector_store
+from clouddash.retrieval.bm25_store import build_index
 from clouddash.settings import get_settings
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Ingest CloudDash KB into ChromaDB.")
-    parser.add_argument(
-        "--rebuild",
-        action="store_true",
-        help="Drop the existing collection and re-ingest everything.",
-    )
-    parser.add_argument(
-        "--kb-root",
-        default=None,
-        help="Override the KB root directory.",
-    )
-    args = parser.parse_args(argv)
+def main(rebuild: bool = False) -> None:
+    cfg = get_settings()
+    cfg.ensure_dirs()
 
-    configure_logging(json_format=False)  # Pretty console for the script
-    log = get_logger(__name__)
-    settings = get_settings()
-    settings.ensure_directories()
+    print(f"Loading KB from {cfg.kb_root_dir}...")
+    articles = load_articles(cfg.kb_root_dir)
+    print(f"  {len(articles)} articles found")
 
-    kb_root = args.kb_root or settings.kb_root_dir
-    log.info("ingest.start", kb_root=kb_root, rebuild=args.rebuild)
+    all_chunks = []
+    for art in articles:
+        chunks = chunk_article(art)
+        all_chunks.extend(chunks)
+    print(f"  {len(all_chunks)} chunks created")
+
+    if rebuild:
+        # nuke the collection and start over
+        import chromadb
+        client = chromadb.PersistentClient(path=cfg.chroma_persist_dir)
+        try:
+            client.delete_collection(cfg.chroma_collection_name)
+            print("  existing collection deleted")
+        except Exception:
+            pass
+        get_vector_store.cache_clear()
+
     t0 = time.time()
-
-    articles = load_articles(kb_root)
-    chunks = chunk_articles(articles)
-
-    store = VectorStore()
-    if args.rebuild:
-        store.reset()
-    store.upsert_chunks(chunks)
-
-    elapsed = time.time() - t0
-    log.info(
-        "ingest.done",
-        articles=len(articles),
-        chunks=len(chunks),
-        store_count=store.count(),
-        seconds=round(elapsed, 2),
-    )
-
-    print("\n" + "=" * 60)
-    print(f"  Ingested {len(articles)} articles → {len(chunks)} chunks")
-    print(f"  Vector store: {store.count()} entries at {store.persist_dir}")
-    print(f"  Elapsed: {elapsed:.1f}s")
-    print("=" * 60)
-    return 0
+    print("  embedding and indexing...")
+    add_chunks(all_chunks)
+    build_index(all_chunks)
+    print(f"  done in {time.time() - t0:.1f}s")
+    print(f"Ingestion complete: {len(all_chunks)} chunks in ChromaDB + BM25")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    p = argparse.ArgumentParser()
+    p.add_argument("--rebuild", action="store_true")
+    args = p.parse_args()
+    main(rebuild=args.rebuild)
