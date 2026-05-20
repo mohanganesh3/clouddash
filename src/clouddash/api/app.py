@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -50,15 +51,18 @@ async def lifespan(app: FastAPI):
         os.environ["LANGCHAIN_PROJECT"] = cfg.langchain_project
         os.environ["LANGCHAIN_ENDPOINT"] = cfg.langchain_endpoint
 
-    # rebuild BM25 index from ChromaDB on startup
-    # ChromaDB is persistent, BM25 is in-memory only — need this every restart
-    _reload_bm25()
+    async def warmup() -> None:
+        # Keep Render health checks fast: open the port first, then warm retrieval/graph.
+        await asyncio.to_thread(_reload_bm25)
+        from clouddash.orchestrator.graph import get_orchestrator
+        await asyncio.to_thread(get_orchestrator)
 
-    # warm up the orchestrator so first request isn't slow
-    from clouddash.orchestrator.graph import get_orchestrator
-    get_orchestrator()
-
-    yield
+    task = asyncio.create_task(warmup())
+    try:
+        yield
+    finally:
+        if not task.done():
+            task.cancel()
 
 
 def create_app() -> FastAPI:
