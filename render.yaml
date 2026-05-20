@@ -73,3 +73,15 @@ services:
       name: chroma-data
       mountPath: /var/data
       sizeGB: 1
+
+  - type: web
+    name: clouddash-web
+    runtime: node
+    plan: free
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start -- -H 0.0.0.0 -p $PORT
+    autoDeploy: true
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        value: https://clouddash-hev5.onrender.com

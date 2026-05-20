@@ -1,7 +1,24 @@
+import os
+
 from fastapi import APIRouter
+from fastapi.responses import RedirectResponse
+
 from clouddash.settings import get_settings
 
 router = APIRouter()
+
+
+@router.get("/")
+async def root():
+    frontend_url = os.environ.get("FRONTEND_URL", "").strip()
+    if frontend_url:
+        return RedirectResponse(frontend_url)
+    return {
+        "service": "CloudDash Support API",
+        "status": "ok",
+        "frontend": "Deploy the Next.js app from /frontend and set FRONTEND_URL to its URL.",
+        "health": "/api/health",
+    }
 
 
 @router.get("/health")

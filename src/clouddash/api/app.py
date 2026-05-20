@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 from clouddash.logging_setup import setup_logging
 from clouddash.settings import get_settings
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
         "http://127.0.0.1:3020",
         "http://10.36.190.67:3010",
         "https://*.vercel.app",
+        "https://*.onrender.com",
     ]
     frontend_url = os.environ.get("FRONTEND_URL", "")
     if frontend_url:
@@ -93,11 +95,23 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
-        allow_origin_regex=r"https://.*\.vercel\.app",
+        allow_origin_regex=r"https://.*\.(vercel\.app|onrender\.com)",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.get("/", include_in_schema=False)
+    async def root():
+        frontend_url = os.environ.get("FRONTEND_URL", "").strip()
+        if frontend_url:
+            return RedirectResponse(frontend_url)
+        return {
+            "service": "CloudDash Support API",
+            "status": "ok",
+            "frontend": "Deploy the Next.js app from /frontend and set FRONTEND_URL to its URL.",
+            "health": "/api/health",
+        }
 
     from clouddash.api.routes import agents, chat, health, hitl, trace
     app.include_router(health.router, prefix="/api")
