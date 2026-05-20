@@ -4,6 +4,7 @@ from functools import lru_cache
 from typing import Any
 
 import chromadb
+from chromadb.config import Settings
 
 from clouddash.retrieval.embedder import get_embedder
 from clouddash.settings import get_settings
@@ -12,7 +13,10 @@ from clouddash.settings import get_settings
 @lru_cache(maxsize=1)
 def get_vector_store():
     cfg = get_settings()
-    client = chromadb.PersistentClient(path=cfg.chroma_persist_dir)
+    client = chromadb.PersistentClient(
+        path=cfg.chroma_persist_dir,
+        settings=Settings(anonymized_telemetry=False),
+    )
     return client.get_or_create_collection(name=cfg.chroma_collection_name)
 
 
