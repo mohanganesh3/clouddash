@@ -32,60 +32,156 @@ Built for **CloudDash**, a fictional cloud infrastructure monitoring SaaS.
 
 ## Architecture
 
-The system is a 7-node LangGraph `StateGraph` with a nested 8-node CRAG subgraph. State is persisted via async SQLite checkpointers, enabling multi-turn conversations and resumable HITL interrupts.
+The system is a 7-node LangGraph `StateGraph` with a nested 8-node CRAG subgraph. State is persisted via `AsyncSqliteSaver` checkpointers keyed on `thread_id`, enabling multi-turn conversations and resumable HITL interrupts across HTTP requests.
 
-### Orchestrator Graph
+### Orchestrator Graph — Full Edge Topology
+
+The graph is compiled dynamically at startup from `config/agents.yaml` via `AgentRegistry`. The critical detail: `output_guard` doesn't just validate — it reads the `HandoverPacket` from the specialist's response and **re-routes to a different specialist**, enabling cross-agent handovers without returning to triage.
 
 ```mermaid
 flowchart TD
-    start([User Message]) --> guard{Input Guardrails}
-    guard -->|blocked| refuse[Hard Refusal]
-    guard -->|passed| lang[Language Detection]
-    lang --> triage[Triage Agent]
+    start(["User Message"]) --> input_guard{"evaluate_input()<br/>─────────<br/>1. Length ≤ 4000<br/>2. Injection detect<br/>3. PII redaction"}
 
-    triage --> |"technical / account"| tech[Technical Agent]
-    triage --> |"billing"| bill[Billing Agent]
-    triage --> |"general"| know[Knowledge Agent]
-    triage --> |"escalation"| esc[Escalation Agent]
+    input_guard -->|"blocked<br/>(injection / length)"| refuse(["Hard Refusal"])
+    input_guard -->|"passed / redacted"| lang["language_detect<br/>─────────<br/>Sarvam API<br/>Detects Indian languages<br/>Emits localized greeting<br/>(turn 1 only)"]
 
-    tech & bill & know --> outguard[Output Guard]
-    outguard -->|grounded| response([Stream Response])
-    outguard -->|ungrounded| correct[Self-Correction Loop]
-    correct --> outguard
+    lang --> triage["triage<br/>─────────<br/>Heuristic keywords first<br/>then LLM → IntentClassification<br/>(intent, sentiment, urgency,<br/>entities, confidence)"]
 
-    esc --> interrupt[/"interrupt() — HITL Pause"/]
-    interrupt -->|operator resolves| response
+    triage -->|"TECHNICAL / ACCOUNT"| tech
+    triage -->|"BILLING"| bill
+    triage -->|"GENERAL"| know
+    triage -->|"ESCALATION"| esc
 
-    style guard fill:#dc2626,color:#fff
-    style outguard fill:#dc2626,color:#fff
-    style triage fill:#7c3aed,color:#fff
-    style tech fill:#2563eb,color:#fff
-    style bill fill:#2563eb,color:#fff
-    style know fill:#2563eb,color:#fff
-    style esc fill:#ea580c,color:#fff
-    style interrupt fill:#ea580c,color:#fff
+    subgraph workers ["Specialist Agents — each invokes CRAG subgraph"]
+        tech["technical<br/>─────────<br/>run_crag() → chunks<br/>LLM reasoning → _TechResponse<br/>Citations: KB-XXX § N"]
+        bill["billing<br/>─────────<br/>run_crag() → chunks<br/>CRM lookup (customer plan)<br/>LLM → _BillingResponse<br/>$1000 refund authority limit"]
+        know["knowledge<br/>─────────<br/>run_crag() → chunks<br/>LLM reasoning → response<br/>General KB queries"]
+    end
+
+    esc["escalation<br/>─────────<br/>Generates EscalationTicket<br/>(priority, actions, summary)<br/>Calls interrupt()"] --> hitl[/"Graph pauses — state saved to SQLite<br/>Operator dashboard shows resolution panel"/]
+
+    hitl -->|"Command(resume=decision)"| response
+
+    tech & bill & know --> outguard
+
+    outguard{"output_guard<br/>─────────<br/>check_grounding()<br/>Verifies all claims against<br/>retrieved chunks"} -->|"grounded +<br/>no handover"| response(["SSE Stream → Client<br/>─────────<br/>Events: meta, node, token,<br/>chunks, handover, final, done"])
+
+    outguard -->|"ungrounded"| selfcorrect["Self-Correction<br/>─────────<br/>Appends failure details<br/>Re-prompts specialist<br/>(max 2 retries)"]
+    selfcorrect --> outguard
+
+    outguard -->|"HandoverPacket<br/>present → re-route<br/>to next specialist"| tech
+    outguard -->|"HandoverPacket<br/>→ billing"| bill
+    outguard -->|"HandoverPacket<br/>→ escalation"| esc
+
+    style input_guard fill:#991b1b,color:#fff
+    style outguard fill:#991b1b,color:#fff
+    style triage fill:#5b21b6,color:#fff
+    style tech fill:#1d4ed8,color:#fff
+    style bill fill:#1d4ed8,color:#fff
+    style know fill:#1d4ed8,color:#fff
+    style esc fill:#c2410c,color:#fff
+    style hitl fill:#c2410c,color:#fff
+    style lang fill:#4338ca,color:#fff
+    style selfcorrect fill:#b91c1c,color:#fff
+    style response fill:#15803d,color:#fff
 ```
 
-### CRAG Subgraph (Corrective Retrieval-Augmented Generation)
+### CRAG Subgraph — 8-Node Retrieval State Machine
 
-Retrieval is isolated as a standalone LangGraph subgraph with its own state. Specialist agents invoke it via `run_crag()`.
+The CRAG pipeline is a standalone `StateGraph` with its own `CRAGState` TypedDict. It evaluates retrieval quality and branches into three paths based on confidence scoring. Each specialist agent invokes it via `run_crag(query, history_context)`.
 
 ```mermaid
-flowchart LR
-    q[Query Rewrite] --> par["Parallel Retrieve"]
-    par --> bm[BM25] & dense[ChromaDB]
-    bm & dense --> rrf["RRF Fusion (k=60)"]
-    rrf --> rerank[LLM Rerank]
-    rerank --> eval{Relevance Score}
+flowchart TD
+    entry(["run_crag(query, history)"]) --> rewrite
 
-    eval -->|"> 0.7"| direct[Direct]
-    eval -->|"0.3 — 0.7"| supp[Supplement]
-    eval -->|"< 0.3"| web[Web Fallback]
+    rewrite["rewrite<br/>─────────<br/>LLM decomposes user query<br/>into 1–3 standalone queries<br/>using conversation context<br/>→ _QueryRewriteOutput"]
 
-    style eval fill:#f59e0b,color:#000
-    style direct fill:#16a34a,color:#fff
-    style supp fill:#ca8a04,color:#fff
-    style web fill:#dc2626,color:#fff
+    rewrite --> retrieve["parallel_retrieve<br/>─────────<br/>asyncio.gather()<br/>BM25 + ChromaDB in parallel"]
+
+    retrieve --> bm25["BM25 Store<br/>rank-bm25<br/>Keyword matching"]
+    retrieve --> dense["ChromaDB<br/>BAAI/bge-small-en-v1.5<br/>384-dim dense vectors"]
+
+    bm25 & dense --> fuse["fuse<br/>─────────<br/>Reciprocal Rank Fusion<br/>k = 60<br/>Merges both result sets"]
+
+    fuse --> rerank["rerank<br/>─────────<br/>Cohere Rerank API<br/>(LLM fallback available)<br/>Returns top-N with scores"]
+
+    rerank --> eval{"relevance_eval<br/>─────────<br/>LLM scores overall<br/>confidence 0.0–1.0<br/>→ _RelevanceEvalOutput"}
+
+    eval -->|"confidence > 0.7<br/>CRAGPath.DIRECT"| done["done<br/>─────────<br/>Return top reranked chunks<br/>directly to specialist"]
+
+    eval -->|"0.3 < confidence ≤ 0.7<br/>CRAGPath.SUPPLEMENT"| supplement["supplement<br/>─────────<br/>Broadens query scope<br/>'query CloudDash overview'<br/>Merges extra results<br/>Deduplicates by chunk_id"]
+
+    eval -->|"confidence ≤ 0.3<br/>CRAGPath.WEB_FALLBACK"| web["web_fallback<br/>─────────<br/>Tavily search_depth=advanced<br/>max_results=3<br/>Merges with top-2 KB chunks"]
+
+    done & supplement & web --> output(["Return: list of RetrievedChunk + CRAGPath enum"])
+
+    style rewrite fill:#4338ca,color:#fff
+    style retrieve fill:#1d4ed8,color:#fff
+    style bm25 fill:#0369a1,color:#fff
+    style dense fill:#0369a1,color:#fff
+    style fuse fill:#7e22ce,color:#fff
+    style rerank fill:#7e22ce,color:#fff
+    style eval fill:#a16207,color:#fff
+    style done fill:#15803d,color:#fff
+    style supplement fill:#a16207,color:#fff
+    style web fill:#b91c1c,color:#fff
+```
+
+### Cross-Agent Handover — Sequence Diagram
+
+This shows Scenario 2 from the eval suite: a customer asks about SSO setup (technical), then mid-conversation asks about upgrading their plan (billing). The system handles the cross-domain handover through typed `HandoverPacket` contracts.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant API as FastAPI + SSE
+    participant Guard as Input Guardrails
+    participant Triage
+    participant Tech as Technical Agent
+    participant CRAG as CRAG Subgraph
+    participant OutG as Output Guard
+    participant Billing as Billing Agent
+
+    User->>API: "How do I configure SSO with Okta?"
+    API->>Guard: evaluate_input(message)
+    Note over Guard: Length ✓, Injection ✓, PII scan ✓
+    Guard-->>API: InputDecision(is_allowed=true)
+
+    API->>Triage: IntentClassification
+    Note over Triage: Heuristic: "sso" → TECHNICAL<br/>LLM confirms: TECHNICAL, confidence=0.92
+
+    Triage->>Tech: Route via conditional edge
+    Tech->>CRAG: run_crag("SSO Okta config", history)
+    Note over CRAG: Rewrite → Parallel BM25+Dense<br/>→ RRF → Rerank → Eval: 0.85<br/>→ CRAGPath.DIRECT
+
+    CRAG-->>Tech: [KB-017 §2, KB-018 §1] + DIRECT
+    Note over Tech: LLM generates answer<br/>with [KB-017 §2] citations<br/>needs_billing_handover=false
+
+    Tech->>OutG: AgentResponse(confidence=0.88)
+    Note over OutG: check_grounding() → PASS<br/>All citations verified
+    OutG-->>API: Stream response to user
+
+    User->>API: "Also, what's the cost to upgrade to Enterprise?"
+    API->>Triage: IntentClassification
+    Note over Triage: Heuristic: "upgrade" → BILLING<br/>But continuing tech thread...<br/>LLM: TECHNICAL, confidence=0.6
+
+    Triage->>Tech: Route to Technical (same thread)
+    Tech->>CRAG: run_crag("Enterprise upgrade cost", history)
+    Note over CRAG: Eval: 0.45 → CRAGPath.SUPPLEMENT<br/>Broadens to billing KB articles
+
+    CRAG-->>Tech: [KB-010 §3, KB-011 §1] + SUPPLEMENT
+    Note over Tech: LLM detects billing domain<br/>needs_billing_handover=true
+
+    Tech->>OutG: AgentResponse + HandoverPacket
+    Note over OutG: HandoverPacket detected<br/>from=TECHNICAL, to=BILLING<br/>reason=MULTI_INTENT<br/>Re-routes to Billing Agent
+
+    OutG->>Billing: HandoverPacket (entities, summary, prior_attempts)
+    Note over Billing: Acknowledges handover<br/>CRM lookup: customer plan=PRO<br/>Runs CRAG for pricing context
+
+    Billing->>OutG: AgentResponse(confidence=0.91)
+    Note over OutG: Grounded ✓, no further handover
+    OutG-->>API: Stream billing response
+    API-->>User: SSE events: meta→node→token→chunks→final→done
 ```
 
 ---
