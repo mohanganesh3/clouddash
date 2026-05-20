@@ -55,8 +55,8 @@ async def lifespan(app: FastAPI):
     async def warmup() -> None:
         # Keep Render health checks fast: open the port first, then warm retrieval/graph.
         await asyncio.to_thread(_reload_bm25)
-        from clouddash.orchestrator.graph import get_orchestrator
-        await asyncio.to_thread(get_orchestrator)
+        from clouddash.orchestrator.graph import aget_orchestrator
+        await aget_orchestrator()
 
     task = asyncio.create_task(warmup())
     try:

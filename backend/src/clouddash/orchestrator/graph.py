@@ -354,3 +354,11 @@ def get_orchestrator() -> Orchestrator:
     if _ORCHESTRATOR is None:
         _ORCHESTRATOR = Orchestrator()
     return _ORCHESTRATOR
+
+
+async def aget_orchestrator() -> Orchestrator:
+    """Return an orchestrator whose checkpointer supports async graph calls."""
+    global _ORCHESTRATOR
+    if _ORCHESTRATOR is None or not isinstance(_ORCHESTRATOR._checkpointer, AsyncSqliteSaver):
+        _ORCHESTRATOR = Orchestrator()
+    return _ORCHESTRATOR

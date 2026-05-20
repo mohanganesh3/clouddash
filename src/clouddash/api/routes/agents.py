@@ -22,6 +22,6 @@ async def list_agents():
 
 @router.post("/agents/reload")
 async def reload_agents():
-    from clouddash.orchestrator.graph import get_orchestrator
-    get_orchestrator().rebuild()
+    from clouddash.orchestrator.graph import aget_orchestrator
+    (await aget_orchestrator()).rebuild()
     return {"status": "reloaded"}

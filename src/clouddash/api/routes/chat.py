@@ -191,9 +191,9 @@ async def _stream_generator(
     conversation_id: str,
     message: str,
 ) -> AsyncGenerator[str, None]:
-    from clouddash.orchestrator.graph import get_orchestrator
+    from clouddash.orchestrator.graph import aget_orchestrator
 
-    orch = get_orchestrator()
+    orch = await aget_orchestrator()
     t0 = time.time()
 
     yield _sse("meta", {"conversation_id": conversation_id})

@@ -12,8 +12,8 @@ async def get_trace(trace_id: str):
 
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(conversation_id: str):
-    from clouddash.orchestrator.graph import get_orchestrator
-    state = await get_orchestrator().get_state(conversation_id)
+    from clouddash.orchestrator.graph import aget_orchestrator
+    state = await (await aget_orchestrator()).get_state(conversation_id)
     if not state:
         return {"conversation_id": conversation_id, "messages": [], "turn_id": 0}
     msgs = state.get("messages", [])

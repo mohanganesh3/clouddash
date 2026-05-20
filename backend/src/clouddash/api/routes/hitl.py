@@ -12,8 +12,8 @@ class HITLResumeRequest(BaseModel):
 
 @router.post("/hitl/{conversation_id}/resume")
 async def resume_hitl(conversation_id: str, req: HITLResumeRequest):
-    from clouddash.orchestrator.graph import get_orchestrator
-    orch = get_orchestrator()
+    from clouddash.orchestrator.graph import aget_orchestrator
+    orch = await aget_orchestrator()
 
     payload = req.decision
     if req.decision == "edit" and req.ticket:
