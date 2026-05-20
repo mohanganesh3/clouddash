@@ -45,7 +45,7 @@ This guide covers deploying CloudDash to production using Render (backend) and V
    - First build takes ~5-10 minutes (ChromaDB ingest)
 
 5. **Get your backend URL**
-   - Render will provide a URL like `https://clouddash-api.onrender.com`
+   - Your backend URL: **https://clouddash-hev5.onrender.com**
    - Save this for frontend configuration
 
 ---
@@ -68,7 +68,7 @@ This guide covers deploying CloudDash to production using Render (backend) and V
    - Set root directory to `frontend`
 
 3. **Configure environment variables**
-   - `NEXT_PUBLIC_API_URL` — Your backend URL from Render (e.g., `https://clouddash-api.onrender.com`)
+   - `NEXT_PUBLIC_API_URL` — Your backend URL from Render: `https://clouddash-hev5.onrender.com`
 
 4. **Deploy**
    - Click "Deploy"
@@ -76,14 +76,15 @@ This guide covers deploying CloudDash to production using Render (backend) and V
    - Takes ~2-3 minutes
 
 5. **Get your frontend URL**
-   - Vercel will provide a URL like `https://clouddash-frontend.vercel.app`
+   - Your frontend URL: **https://frontend-ten-gray-22.vercel.app/**
 
 ---
 
 ## Post-Deployment Checklist
 
-- [ ] Backend health check: `https://<backend-url>/api/health`
-- [ ] Frontend loads and connects to backend
+- [ ] Backend health check: https://clouddash-hev5.onrender.com/api/health
+- [ ] Swagger docs: https://clouddash-hev5.onrender.com/docs
+- [ ] Frontend loads: https://frontend-ten-gray-22.vercel.app/
 - [ ] Test a simple chat message
 - [ ] Test agent routing (try "I need help with billing")
 - [ ] Test CRAG retrieval (try "How do I set up alerts?")
