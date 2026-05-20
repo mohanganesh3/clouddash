@@ -18,7 +18,7 @@ services:
       - key: APP_ENV
         value: production
       - key: FRONTEND_URL
-        value: https://clouddash-web.onrender.com
+        value: https://frontend-ten-gray-22.vercel.app
       - key: LOG_LEVEL
         value: INFO
       - key: LLM_PROVIDER

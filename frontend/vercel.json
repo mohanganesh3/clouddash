@@ -2,14 +2,11 @@
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
   "devCommand": "npm run dev",
-  "installCommand": "npm install",
+  "installCommand": "npm ci",
   "framework": "nextjs",
   "regions": ["iad1"],
   "env": {
-    "NEXT_PUBLIC_API_URL": {
-      "description": "Backend API URL (e.g., https://clouddash-api.onrender.com)",
-      "value": "http://localhost:8001"
-    }
+    "NEXT_PUBLIC_API_URL": "https://clouddash-hev5.onrender.com"
   },
   "headers": [
     {
