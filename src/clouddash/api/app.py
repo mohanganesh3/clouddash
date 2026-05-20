@@ -16,7 +16,7 @@ def _reload_bm25() -> None:
         from clouddash.retrieval.vector_store import get_vector_store
         from clouddash.retrieval.bm25_store import build_index
         store = get_vector_store()
-        result = store._collection.get(include=["documents", "metadatas"])
+        result = store.get(include=["documents", "metadatas"])
         docs = result.get("documents") or []
         metas = result.get("metadatas") or []
         if not docs:

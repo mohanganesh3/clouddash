@@ -4,26 +4,23 @@ from functools import lru_cache
 from typing import Any
 
 import chromadb
-from langchain_chroma import Chroma
 
 from clouddash.retrieval.embedder import get_embedder
 from clouddash.settings import get_settings
 
 
 @lru_cache(maxsize=1)
-def get_vector_store() -> Chroma:
+def get_vector_store():
     cfg = get_settings()
     client = chromadb.PersistentClient(path=cfg.chroma_persist_dir)
-    return Chroma(
-        client=client,
-        collection_name=cfg.chroma_collection_name,
-        embedding_function=get_embedder(),
-    )
+    return client.get_or_create_collection(name=cfg.chroma_collection_name)
 
 
 def add_chunks(chunks: list[dict[str, Any]]) -> None:
-    store = get_vector_store()
-    texts = [c["content"] for c in chunks]
+    collection = get_vector_store()
+    embedder = get_embedder()
+    documents = [c["content"] for c in chunks]
+    embeddings = embedder.embed_documents(documents)
     metadatas = [
         {
             "chunk_id": c["chunk_id"],
@@ -35,21 +32,36 @@ def add_chunks(chunks: list[dict[str, Any]]) -> None:
         for c in chunks
     ]
     ids = [c["chunk_id"] for c in chunks]
-    store.add_texts(texts=texts, metadatas=metadatas, ids=ids)
+    collection.upsert(
+        ids=ids,
+        documents=documents,
+        embeddings=embeddings,
+        metadatas=metadatas,
+    )
 
 
 def similarity_search(query: str, k: int = 10) -> list[dict[str, Any]]:
-    store = get_vector_store()
-    results = store.similarity_search_with_relevance_scores(query, k=k)
+    collection = get_vector_store()
+    query_embedding = get_embedder().embed_query(query)
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=k,
+        include=["documents", "metadatas", "distances"],
+    )
     out = []
-    for doc, score in results:
+    docs = (results.get("documents") or [[]])[0]
+    metas = (results.get("metadatas") or [[]])[0]
+    distances = (results.get("distances") or [[]])[0]
+    for doc, meta, distance in zip(docs, metas, distances):
+        metadata = meta or {}
+        score = 1.0 / (1.0 + float(distance or 0.0))
         out.append({
-            "chunk_id": doc.metadata.get("chunk_id", ""),
-            "kb_id": doc.metadata.get("kb_id", ""),
-            "title": doc.metadata.get("title", ""),
-            "category": doc.metadata.get("category", ""),
-            "section": doc.metadata.get("section", 0),
-            "content": doc.page_content,
-            "dense_score": float(score),
+            "chunk_id": metadata.get("chunk_id", ""),
+            "kb_id": metadata.get("kb_id", ""),
+            "title": metadata.get("title", ""),
+            "category": metadata.get("category", ""),
+            "section": metadata.get("section", 0),
+            "content": doc,
+            "dense_score": score,
         })
     return out

@@ -10,7 +10,6 @@ langchain-community>=0.3.10,<0.4
 langchain-google-genai>=2.0.7,<3.0
 langchain-groq>=1.0,<2.0
 langchain-nvidia-ai-endpoints>=1.0,<2.0
-langchain-chroma>=0.1.4,<0.3
 
 # Retrieval / embeddings
 chromadb>=0.5.20,<0.7
