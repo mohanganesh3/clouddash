@@ -1,248 +1,243 @@
-# CloudDash Support
+# ☁️ CloudDash AI Support Engine
 
-Multi-agent AI customer support for CloudDash, a fictional B2B SaaS for cloud monitoring. Built for an AI Engineering Intern assessment.
+[![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-0.2.x-orange.svg)](https://github.com/langchain-ai/langgraph)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115.x-emerald.svg)](https://fastapi.tiangolo.com/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](file:///Users/mohanganesh/assignment/LICENSE)
 
-> **🟢 Live Demo** — Try it now, no setup required:
->
-> | | URL |
-> |---|---|
-> | **Frontend (Next.js)** | **https://frontend-ten-gray-22.vercel.app/** |
-> | **Backend API** | **https://clouddash-hev5.onrender.com** |
-> | **API Health** | https://clouddash-hev5.onrender.com/api/health |
-> | **Swagger Docs** | https://clouddash-hev5.onrender.com/docs |
-> | **Source Code** | https://github.com/mohanganesh3/clouddash |
+An enterprise-grade, multi-agent AI customer support system built for **CloudDash**—a fictional cloud infrastructure monitoring platform. The system handles complex, multi-turn technical and billing queries, coordinates agent handovers with structured state tracking, performs semantic retrieval with query rewriting, enforces strict input/output guardrails, and provides human-in-the-loop (HITL) escalation capabilities.
 
 ---
 
-## What it does
+### 🟢 Production Deployments
 
-Five LangGraph agents with a real support operations dashboard:
-
-- **Triage** — LLM intent classification. Returns structured `IntentClassification` with confidence, sentiment, urgency. No regex. No if/else.
-- **Technical** — alert configs, integrations, SSO, API, dashboards. CRAG retrieval.
-- **Billing** — plan changes, invoice disputes, refunds (up to $1k autonomy). Pulls from mock CRM via `@tool`.
-- **Knowledge** — general KB queries. Files feature requests when KB has a gap.
-- **Escalation** — calls LangGraph's `interrupt()`. Graph actually pauses. Human approves via HITL dialog. Resumes with `Command(resume=...)`.
-
-Retrieval is its own LangGraph subgraph (CRAG): rewrite → parallel BM25+dense → RRF fusion → Cohere rerank → LLM relevance eval → branch to supplement or Tavily web fallback. Three paths: direct (>0.7), supplement (0.3–0.7), web (< 0.3).
+| Component | Platform | Live URL |
+|---|---|---|
+| **Operator Dashboard (Next.js)** | Vercel | [frontend-ten-gray-22.vercel.app](https://frontend-ten-gray-22.vercel.app/) |
+| **REST API Server (FastAPI)** | Render | [clouddash-hev5.onrender.com](https://clouddash-hev5.onrender.com) |
+| **API Health Check** | Render | [clouddash-hev5.onrender.com/api/health](https://clouddash-hev5.onrender.com/api/health) |
+| **Interactive OpenAPI Docs** | Render | [clouddash-hev5.onrender.com/docs](https://clouddash-hev5.onrender.com/docs) |
 
 ---
 
-## Stack
-
-Python 3.13 · LangGraph 0.2 · LangChain 0.3 · FastAPI · Pydantic v2 · ChromaDB · rank-bm25 · Cohere Rerank · Next.js 15 · shadcn/ui · Tailwind CSS 4 · Framer Motion · Zustand
-
-**LLM providers**: Google Gemini (primary), Sarvam AI (Indian LLM, OpenAI-compat at `sarvam.ai/v1`), Groq as fallback via ChatOpenAI base_url trick (langchain-groq requires core>=1.x which breaks 0.3.x pinning — wired through ChatOpenAI instead).
-
----
-
-## Quick start
-
-```bash
-# .env at repo root — copy from .env.example and fill in keys
-# Need at least: GOOGLE_API_KEY and GROQ_API_KEY (Gemini has 20 req/day free tier)
-
-# backend
-pip install -e backend/
-PYTHONPATH=backend/src uvicorn clouddash.api.app:app --port 8001
-
-# frontend
-cd frontend && npm install && npm run dev
-```
-
-First run downloads `BAAI/bge-small-en-v1.5` (~130MB) and ingests the KB (~35s). Subsequent starts pick up from ChromaDB.
-
----
-
-## Why these choices
-
-**LangGraph over CrewAI**: Spent ~2 hours on CrewAI first. Routing was too opaque — couldn't see why triage was sending queries to the wrong specialist, no clean checkpointing. LangGraph exposes the graph structure explicitly. The routing logic is in my code, not a framework abstraction.
-
-**CRAG as a subgraph**: It shows up as a distinct subgraph in LangSmith with its own node timeline. The relevance evaluator makes a visible decision. A bare function call is invisible to the evaluator.
-
-**interrupt() for HITL**: LangGraph 0.2's interrupt() actually pauses the graph and checkpoints state. The frontend shows an approval dialog, graph resumes via `Command(resume=...)`. Every other approach either fakes it or blocks the event loop.
-
-**Sarvam AI**: Their sarvam-30b is fast and cheap for triage/rewriting. More importantly, their language detection enables a multilingual greeting — detect Hindi/Tamil/Telugu/etc., respond in that language, continue in English. Real product thinking for an India-deployed system.
-
-**Gemini quota note**: Free tier is 20 req/day for gemini-2.5-flash. Hit this immediately during testing. Set `LLM_PROVIDER=groq` in `.env` for unlimited testing (llama-3.3-70b-versatile).
-
----
-
-## Structure
-
-```
-backend/src/clouddash/
-  agents/       triage, technical, billing, knowledge, escalation + registry
-  orchestrator/ main graph (SqliteSaver, interrupt, routing)
-  retrieval/    CRAG subgraph + ChromaDB + BM25 + Cohere
-  guardrails/   LLM injection detection + regex/LLM PII + LLM grounding
-  api/          FastAPI + SSE streaming
-  providers/    Gemini + Sarvam + Groq
-  tools/        @tool: crm_lookup, create_ticket, feature_request
-  evals/        RAGAS + LLM-judge
-frontend/
-  components/   Dashboard, chat, trace timeline, HITL dialog, handover banner
-  hooks/        useStreamingChat (SSE)
-  store/        Zustand conversation store
-```
-
----
-
-## What I'd change with more time
-
-- Qdrant instead of ChromaDB for scale. Chroma's HNSW gets unreliable past ~100k chunks.
-- Two LLM calls per agent would enable true token-by-token generation and structured extraction. This build keeps one structured call per agent, streams live graph phases while reasoning, then streams the validated final answer as clean UI deltas.
-- Async guardrail evaluation. Injection check adds ~800ms because it blocks before retrieval starts.
-- Persistent BM25 index serialized to disk. Currently rebuilt from ChromaDB on every restart (~1s, acceptable for now).
-
----
-
-## Architecture
+## 🛠️ Architecture Blueprint
 
 ```mermaid
 flowchart TB
-    User[("Customer<br/>(API / CLI / UI)")] --> InGuard["Input Guardrails<br/>length · injection · PII redact"]
-    InGuard -->|blocked| Refuse["Hard-coded Refusal<br/>(never touches LLM)"]
-    InGuard -->|allowed| Triage["Triage Agent<br/>(intent · sentiment · urgency)"]
+    User[("Customer / Client<br/>(Next.js / CLI / API)")] --> InGuard["🛡️ Input Guardrails<br/>(Length · Injection · PII Masking)"]
+    InGuard -->|blocked| Refuse["Hard Refusal<br/>(Instant Reject)"]
+    InGuard -->|allowed| Triage["⚖️ Triage Agent<br/>(Intent · Sentiment · Urgency)"]
 
-    Triage -->|technical| Technical["Technical Agent"]
-    Triage -->|billing| Billing["Billing Agent"]
-    Triage -->|general| Knowledge["Knowledge Agent"]
-    Triage -->|escalate| Escalation["Escalation Agent"]
+    Triage -->|technical / account| Technical["🔧 Technical Agent"]
+    Triage -->|billing| Billing["💳 Billing Agent"]
+    Triage -->|general| Knowledge["📖 Knowledge Agent"]
+    Triage -->|escalate| Escalation["🚨 Escalation Agent"]
 
-    subgraph RAG["Hybrid RAG Pipeline"]
-        QR["Query Rewriter<br/>(conversation-aware)"]
-        BM25["BM25"]
-        Dense["Chroma + BGE"]
-        RRF["RRF Fusion"]
-        Rerank["LLM Reranker"]
-        QR --> BM25 & Dense --> RRF --> Rerank
+    subgraph CRAG["🔄 Corrective RAG Subgraph (Hybrid Pipeline)"]
+        QR["Query Rewriter<br/>(Decomposition)"]
+        BM25["BM25 Store<br/>(Keyword)"]
+        Dense["ChromaDB + BGE<br/>(Dense Vector)"]
+        RRF["RRF Fusion<br/>(Rank Merger)"]
+        Rerank["LLM Rerank<br/>(Filtering)"]
+        Eval["Relevance Evaluator<br/>(Confidence Score)"]
+        Tavily["Tavily Web Search<br/>(Fallback Context)"]
+        
+        QR --> BM25 & Dense --> RRF --> Rerank --> Eval
+        Eval -->|Confidence > 0.7| Direct[Direct Generation]
+        Eval -->|Confidence 0.3-0.7| Supplement[Retrieve Supplemental KB]
+        Eval -->|Confidence < 0.3| Tavily
     end
 
-    Technical --> RAG
-    Billing --> RAG
-    Knowledge --> RAG
+    Technical --> CRAG
+    Billing --> CRAG
+    Knowledge --> CRAG
 
-    Technical -.handover.-> Billing
-    Technical -.handover.-> Escalation
-    Billing -.handover.-> Technical
-    Billing -.handover.-> Escalation
-    Knowledge -.handover.-> Escalation
+    Technical -. handovers .-> Billing & Escalation
+    Billing -. handovers .-> Technical & Escalation
+    Knowledge -. handovers .-> Escalation
 
-    RAG --> OutGuard["Output Guardrails<br/>citations · grounding · refusal-consistency"]
-    OutGuard -->|self-correct| Specialist["Specialist re-run<br/>(max 2 attempts)"]
+    CRAG --> OutGuard["🛡️ Output Guardrails<br/>(Citations · Grounding · Self-Correction)"]
+    OutGuard -->|fail: self-correct| Specialist["Specialist Retry<br/>(Max 2 Turns)"]
     Specialist --> OutGuard
-    OutGuard -->|allow| Response["Final Response<br/>+ citations + handover trail"]
+    OutGuard -->|pass| Response["Response Stream<br/>(Citations + Metadata)"]
 
-    Escalation --> Ticket["Simulated Ticket<br/>(P1/P2/P3 + sentiment)"]
-    Ticket --> Response
+    Escalation --> HITL["⏸️ LangGraph Interrupt<br/>(Operator Panel HITL Dialog)"]
+    HITL -->|approve / resolve| Response
     Refuse --> Response
 ```
 
-**Why orchestrator-worker (Triage + specialists)?** Anthropic's research-system paper shows ~90% lift over single-agent on multi-step support tasks. Triage classifies once, dispatches; specialists own their domain prompts and tools. Handover happens via a typed `HandoverPacket`, not a free-text "please continue" message.
+---
 
-**Why LangGraph?** The handover problem *is* a state-machine problem — guarded transitions, side-effects, audit trails. LangGraph's `StateGraph` + conditional edges + `interrupt` map directly. The graph is built **at startup** from `config/agents.yaml`, so adding an agent never touches orchestrator code.
+## 💡 Architectural Highlights
 
-See **[`DESIGN.md`](DESIGN.md)** for the 9 ADRs documenting every major decision.
+### 1. Dynamic Agent Registry (`config/agents.yaml`)
+Specialized agents are not hardcoded. The system compiles its LangGraph `StateGraph` dynamically at startup using `AgentRegistry`. Adding a new agent requires zero core orchestration code changes:
+* Add a configuration block to `config/agents.yaml`.
+* Implement the class extending `BaseAgent`.
+* The orchestrator dynamically builds nodes and conditional routing edges automatically.
+
+### 2. Primary Reasoning Engine: Sarvam AI (`sarvam-105b`)
+The primary model powering all specialists, evaluations, and triage routing is **Sarvam AI** (`sarvam-105b`) running with `reasoning_effort: high`.
+* **Multilingual Input Node**: Detects regional Indian languages (Hindi, Tamil, Telugu, etc.) at turn 1, injects a localized greeting, and dynamically coordinates responses.
+* **Structured Outputs**: Fully schemas-validated using Pydantic bindings directly compiled through the ChatOpenAI client.
+* **Adaptive Fallback Chain**: In case of transient rate-limits, the system falls back gracefully: `Sarvam AI` ➔ `Google Gemini` ➔ `Groq Llama-3`.
+
+### 3. Corrective RAG Subgraph (CRAG)
+Retrieval is implemented as a first-class nested LangGraph state machine:
+* **Hybrid Retrieval**: Executes dense vector search (ChromaDB + `BAAI/bge-small-en-v1.5`) and lexical keyword search (BM25) in parallel.
+* **RRF Rank Fusion**: Combines ranks using Reciprocal Rank Fusion ($k=60$).
+* **LLM Reranker**: Employs `sarvam-105b` to evaluate semantic compatibility, returning top matches with reasoning justifications.
+* **Triple-Path Branching**:
+  * **Direct**: Grounded output utilizing highly relevant articles.
+  * **Supplemental**: Expands query intent to fetch peripheral overview documents when context is partially missing.
+  * **Web Fallback**: Triggers Tavily API searches for out-of-domain terms (e.g., Datadog integration queries).
+
+### 4. 2-Layer Guardrails & Self-Correction
+* **Input Checks**: Block messages exceeding length limitations (4000 characters), runs a structured LLM injection check, and redacts inbound PII (SSNs, credit cards, phones) using regex + contextual LLM classification.
+* **Output Grounding**: Factual claims are analyzed against retrieved chunks. If ungrounded assertions are detected, the system triggers a self-correction prompt, instructing the agent to rewrite its reply based strictly on the KB.
+* **Citation Validator**: Inspects all inline `[KB-XXX § N]` tags, verifying they correspond to retrieved chunks.
+
+### 5. Stateful Memory & Human-in-the-Loop (HITL)
+Uses `AsyncSqliteSaver` checkpointers to persist session states across async HTTP turns. For high-urgency escalations, the graph calls `interrupt()`, saving the active state and pausing execution. The dashboard presents the operator with a resolution panel; once resolved, the graph resumes statefully using `Command(resume=...)`.
 
 ---
 
-## Quickstart
+## 📂 Repository Layout
 
-### 1. Prerequisites
+```
+.
+├── DESIGN.md                  # 15 Architecture Decision Records (ADRs)
+├── PROGRESS.md                # Chronological build log and engineering process
+├── EVAL_RESULTS.md            # LLM-as-a-judge metric scores for all test runs
+├── REQUIREMENTS_MATRIX.md     # Rubric requirements mapped to implementation
+├── Makefile                   # Shortcuts (install, test, run, demo)
+├── pyproject.toml             # Backend dependencies and metadata config
+├── requirements.txt           # Unified dependency lists
+├── render.yaml                # Render service orchestration blueprint
+│
+├── config/                    # Orchestrator Configuration
+│   ├── agents.yaml            # YAML declaration of active agents
+│   └── routing.yaml           # Intent-to-agent mapping definitions
+│
+├── knowledge_base/            # 19 Markdown articles across 5 domains
+│   ├── account_access/        # SSO configurations, Okta, AzureAD, RBAC
+│   ├── api_docs/              # Webhooks, Python SDK, Rate Limits
+│   ├── billing/               # Plan upgrades, Refund Policy, Invoice formats
+│   ├── faqs/                  # Cloud support matrix, reset protocols
+│   └── troubleshooting/       # AWS rotations, alerts failing, latency
+│
+├── backend/                   # Production Core Service
+│   ├── src/clouddash/
+│   │   ├── agents/            # BaseAgent class and specialist files
+│   │   ├── retrieval/         # CRAG subgraph, BM25, Chroma vectors, reranking
+│   │   ├── guardrails/        # Pre-LLM, Post-LLM, and Self-correction loop
+│   │   ├── orchestrator/      # StateGraph assembly & SSE streaming endpoints
+│   │   ├── tools/             # Mock CRM lookups & tickets generator
+│   │   ├── providers/         # ChatOpenAI factories & Sarvam adapters
+│   │   └── api/               # FastAPI routing, endpoints, and health checks
+│
+└── frontend/                  # Next.js Operator Dashboard
+    ├── components/            # Chat stream, node trace timeline, HITL modals
+    ├── hooks/                 # Server-Sent Events (SSE) parsing stream
+    └── store/                 # Zustand global client conversation store
+```
 
-- Python **3.11–3.13**
-- An NVIDIA AI Endpoints API key (free at [build.nvidia.com](https://build.nvidia.com))
+---
 
-### 2. Install
+## ⚡ Quick Start (Local Setup)
 
+### 1. Set Up Virtual Environment
 ```bash
-git clone https://github.com/mohanganesh3/clouddash.git && cd clouddash
+git clone https://github.com/mohanganesh3/clouddash.git
+cd clouddash
 
-python3.13 -m venv .venv
+# Create virtual environment
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"            # or:  pip install -r requirements.txt && pip install -e . --no-deps
+
+# Install runtime + development dependencies
+pip install -e ".[dev]"
 ```
 
-### 3. Configure
+### 2. Configure Environment Variables
+Create a `.env` file at the repository root:
+```env
+APP_ENV=development
+LLM_PROVIDER=sarvam
+SARVAM_API_KEY=your-sarvam-key-here
+COHERE_API_KEY=your-cohere-key-here     # Optional: falls back to LLM reranking
+TAVILY_API_KEY=your-tavily-key-here     # Optional: falls back to KB defaults
+LANGCHAIN_API_KEY=your-langsmith-key    # Optional: for tracing
+LANGCHAIN_TRACING_V2=false
+```
 
+### 3. Ingest the Knowledge Base
+Parse and embed the 19 markdown articles into ChromaDB:
 ```bash
-cp .env.example .env
-# Edit .env and paste your NVIDIA_API_KEY=nvapi-...
+python -m clouddash.scripts.ingest_kb
 ```
+*Note: Ingests 19 articles, compiling ~147 chunks with contextual prefixes in `backend/data/chroma`.*
 
-### 4. Build the KB index (one-time, ~30s)
-
+### 4. Run the API Server
 ```bash
-clouddash ingest                   # or: python -m clouddash.scripts.ingest_kb
+# Start FastAPI backend (port 8000)
+clouddash serve --port 8000
 ```
 
-Output: 19 articles → 141 chunks embedded into `data/chroma/`.
-
-### 5. Run
-
-**Web UI + REST API:**
+### 5. Run the Frontend Dashboard
+In a separate terminal tab:
 ```bash
-clouddash serve --port 8000        # http://localhost:8000 (or use live: https://clouddash-hev5.onrender.com)
+cd frontend
+npm install
+npm run dev
 ```
-
-**Interactive CLI:**
-```bash
-clouddash chat                     # type 'exit' to quit
-```
-
-**Run all 4 official scenarios end-to-end:**
-```bash
-clouddash demo
-```
-
-**Run the eval harness (~12–15 min, respects 40 RPM):**
-```bash
-python -m clouddash.evals.run --output EVAL_RESULTS.md --jsonl logs/eval_results.jsonl
-```
+Open `http://localhost:3000` to interact with the Next.js visual operator dashboard.
 
 ---
 
-## CLI reference
+## 🎯 Verification & Evaluation
 
-| Command | Purpose |
+### Automatic Scenario Demo
+To run the 4 official scenarios from the rubric sequentially in the CLI and view their outputs:
+```bash
+make demo-scenario-1
+make demo-scenario-2
+make demo-scenario-3
+make demo-scenario-4
+```
+
+### Evals Suite
+The evaluation suite runs LLM-as-a-judge tests across all 8 rubric scenarios (measuring routing accuracy, citation validity, and hallucination refusals):
+```bash
+python -m clouddash.evals.run --output EVAL_RESULTS.md
+```
+*Current test metrics achieve a **100% Pass Rate (8/8)**. See [`EVAL_RESULTS.md`](EVAL_RESULTS.md) for full transcripts.*
+
+---
+
+## 📝 CLI & API Reference
+
+### CLI Utilities
+| Command | Action |
 |---|---|
-| `clouddash ingest [--rebuild]` | Build / rebuild the KB vector store |
-| `clouddash agents` | List every agent registered in `config/agents.yaml` |
-| `clouddash chat` | Interactive REPL (in-memory state) |
-| `clouddash demo [-s 1..4]` | Run one or all 4 official scenarios |
-| `clouddash trace <uuid>` | Audit-log replay for a conversation |
-| `clouddash serve [--port]` | Start the FastAPI server |
-| `clouddash health` | Show config + registered agents |
+| `clouddash ingest` | Clears and embeds the Knowledge Base |
+| `clouddash Serve` | Launches FastAPI backend (supports standard and SSE streams) |
+| `clouddash chat` | Interactive local REPL terminal chat |
+| `clouddash agents` | Lists loaded specialists from YAML registry |
+| `clouddash health` | Evaluates environment configurations and API keys |
+
+### API Endpoints
+* **`POST /api/chat`**: Primary endpoint. Initiates/continues a support thread. Supports standard returns or `text/event-stream` SSE tokens.
+* **`GET /api/health`**: Diagnostic system config check.
+* **`GET /api/conversations/{id}`**: Returns state logs and thread message history.
+* **`GET /api/trace/{id}`**: Resolves all JSONL audit events for a session.
 
 ---
 
-## REST API
+## 🚀 Live Demo: Adding a New Agent in 60 Seconds
+The System Design is built for zero-dependency scaling. To add a new agent:
 
-Interactive docs: **https://clouddash-hev5.onrender.com/docs** (Swagger UI auto-generated by FastAPI). Locally: `http://localhost:8000/docs`.
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/api/health` | Liveness + provider/model echo |
-| `GET` | `/api/agents` | List agents loaded from registry |
-| `POST` | `/api/chat` | Send a message; returns response, citations, handover trail |
-| `GET` | `/api/conversations/{id}` | Full conversation history |
-| `GET` | `/api/trace/{id}` | Every audit-log event for a conversation |
-| `GET` | `/` | HTMX web UI (chat + scenario buttons + add-agent demo) |
-
-**Example:**
-```bash
-curl -s https://clouddash-hev5.onrender.com/api/chat \
-  -H 'content-type: application/json' \
-  -d '{"message": "My alerts stopped firing after I rotated AWS credentials. Pro plan."}' | jq
-```
-
----
-
-## How "add a new agent" works (live demo)
-
-1. Drop a new file at `src/clouddash/agents/onboarding.py` with a class extending `BaseAgent`.
-2. Add a YAML entry under `agents:` in `config/agents.yaml`:
+1. Add the configuration to `backend/config/agents.yaml`:
    ```yaml
    onboarding:
      class: clouddash.agents.onboarding.OnboardingAgent
@@ -250,227 +245,38 @@ curl -s https://clouddash-hev5.onrender.com/api/chat \
      model_tier: reasoning
      tools: []
      requires_kb: true
-     description: Walks new customers through workspace setup.
+     description: Helps new customers provision accounts.
    ```
-3. Hit the **"Reload registry"** button in the web UI (or restart the server). The LangGraph rebuilds; Triage starts routing to it.
+2. Create the prompt template in `backend/src/clouddash/prompts/onboarding.md`.
+3. Create `backend/src/clouddash/agents/onboarding.py`:
+   ```python
+   from clouddash.agents.base import BaseAgent
+   from clouddash.models import AgentResponse
 
-**Zero changes to orchestrator code.** That is the §3.4 extensibility requirement.
-
----
-
-## Test scenarios
-
-The 4 official scenarios from the brief are encoded in `src/clouddash/evals/scenarios.yaml`:
-
-| ID | Scenario | Expected route | Verdict |
-|---|---|---|---|
-| `official_1` | Alerts stopped after AWS credential rotation (Pro plan) | `triage → technical` | ✅ PASS |
-| `official_2` | Cross-agent: SSO check + Pro→Enterprise upgrade | `triage → technical → billing` | ✅ PASS |
-| `official_3` | Double-charged for April; demands manager | `triage → billing → escalation` | ✅ PASS |
-| `official_4` | Datadog integration (KB miss) | `triage → knowledge` | ✅ PASS |
-
-Plus 4 edge variations (PII redaction, prompt injection, SSO-only, refund under limit). Latest run: **8/8 PASS** — see [`EVAL_RESULTS.md`](EVAL_RESULTS.md).
+   class OnboardingAgent(BaseAgent):
+       async def handle(self, state):
+           # Custom routing/handling logic here
+           return AgentResponse(...)
+   ```
+4. Restart the API server or click **Reload Registry** in the UI. Triage will automatically route onboarding queries to the new node.
 
 ---
 
-## Project layout
+## 📜 Architectural Decisions (ADR Summary)
+Detailed records of design tradeoffs can be found in [`DESIGN.md`](DESIGN.md):
 
-```
-.
-├── README.md                      ← you are here
-├── DESIGN.md                      ← 9 ADRs (architecture decisions)
-├── PROGRESS.md                    ← chronological build log (every decision)
-├── EVAL_RESULTS.md                ← latest eval suite run output
-├── REQUIREMENTS_MATRIX.md         ← how each rubric item maps to code
-│
-├── config/
-│   ├── agents.yaml                ← agent registry (Section 3.4)
-│   └── routing.yaml               ← intent → target-agent rules
-│
-├── knowledge_base/                ← 19 Markdown articles, 5 categories
-│   ├── faqs/                      KB-001..004
-│   ├── troubleshooting/           KB-005..009
-│   ├── billing/                   KB-010..013
-│   ├── api_docs/                  KB-014..016
-│   └── account/                   KB-017..019
-│
-├── src/clouddash/
-│   ├── agents/
-│   │   ├── registry.py            ← YAML-driven agent factory
-│   │   ├── base.py                ← BaseAgent abstract class
-│   │   ├── triage.py
-│   │   ├── technical.py
-│   │   ├── billing.py
-│   │   ├── knowledge.py
-│   │   ├── escalation.py
-│   │   └── _helpers.py            ← shared KB-grounded specialist helpers
-│   │
-│   ├── retrieval/
-│   │   ├── loader.py              ← Markdown + frontmatter loader
-│   │   ├── chunker.py             ← Markdown-aware section chunker
-│   │   ├── embedder.py            ← BGE-small via sentence-transformers
-│   │   ├── vector_store.py        ← ChromaDB persistent
-│   │   ├── bm25.py                ← in-memory BM25
-│   │   ├── query_rewriter.py      ← LLM with conversation context
-│   │   ├── retriever.py           ← rewrite → BM25+dense → RRF → rerank
-│   │   └── citations.py           ← citation parser + grounding validator
-│   │
-│   ├── orchestrator/
-│   │   └── graph.py               ← LangGraph StateGraph; wires registry agents
-│   │
-│   ├── handover/
-│   │   ├── audit.py               ← JSONL audit logger + trace replay
-│   │   └── failover.py            ← fallback-to-Triage / fallback-to-Escalation
-│   │
-│   ├── guardrails/
-│   │   ├── input.py               ← length · injection · PII redact
-│   │   ├── output.py              ← citation validity · grounding · refusal-consistency
-│   │   └── pipeline.py            ← evaluate_input / evaluate_output / self-correct loop
-│   │
-│   ├── tools/
-│   │   ├── crm.py                 ← mock customer profile lookup
-│   │   └── escalation_tools.py    ← simulated ticket creation
-│   │
-│   ├── api/                       ← FastAPI app + HTMX templates
-│   ├── cli/                       ← Typer CLI
-│   ├── evals/
-│   │   ├── scenarios.yaml         ← 8 scenarios
-│   │   ├── judge.py               ← LLM-as-judge with rule-based fallback
-│   │   └── run.py                 ← eval runner with deterministic overrides
-│   ├── scripts/
-│   │   ├── ingest_kb.py           ← entry point for `clouddash ingest`
-│   │   ├── smoke_retrieval.py     ← sanity-check the RAG pipeline
-│   │   └── smoke_orchestrator.py  ← end-to-end on the 4 scenarios
-│   ├── prompts/                   ← Markdown prompt templates (one per agent + judge)
-│   ├── settings.py                ← pydantic-settings singleton
-│   ├── exceptions.py              ← typed exception hierarchy
-│   ├── logging_setup.py           ← structlog JSON + audit log
-│   ├── models.py                  ← every Pydantic type (~470 lines)
-│   └── llm.py                     ← provider factory (NVIDIA / Groq / Google)
-│
-├── tests/                         ← pytest (models + retrieval + guardrails + registry + orchestrator)
-├── pyproject.toml
-├── requirements.txt
-├── render.yaml                    ← Render Blueprint (free-tier deployment)
-├── Makefile                       ← shortcuts (install, test, demo-scenario-N, …)
-└── .env.example
-```
-
----
-
-## Configuration
-
-Every knob lives in `.env` and is loaded by `pydantic-settings`. Key settings:
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `LLM_PROVIDER` | `nvidia` | One of `nvidia` · `groq` · `google` |
-| `NVIDIA_API_KEY` | — | NVIDIA AI Endpoints key |
-| `LLM_REASONING_MODEL` | `meta/llama-3.3-70b-instruct` | Specialists + judge |
-| `LLM_FAST_MODEL` | `meta/llama-3.1-8b-instruct` | Triage, guardrails, rewriter |
-| `LLM_TEMPERATURE` | `0.0` | Deterministic by default |
-| `RERANKER_TYPE` | `llm` | `llm` · `cross_encoder` · `none` |
-| `GROUNDING_MIN_SCORE` | `0.25` | Below = trigger "not in KB" path |
-| `MAX_INPUT_LENGTH` | `4000` | Per-message char cap |
-| `SELF_CORRECTION_MAX_ATTEMPTS` | `2` | Output-guardrail self-correct retries |
-| `EVAL_SCENARIO_SLEEP_S` | `6` | Pacing for the 40 RPM NVIDIA limit |
-
-**Switching providers is a one-line change** — set `LLM_PROVIDER=groq` (and `GROQ_API_KEY=...`) and restart. `llm.py` does the rest.
-
----
-
-## Observability
-
-Every run emits structured JSON logs to stdout and an audit trail to `logs/audit.jsonl`. Each event carries the `trace_id` (= conversation UUID) so you can replay any conversation:
-
-```bash
-clouddash trace 7c1f...        # tabular replay
-jq 'select(.trace_id == "7c1f...")' logs/audit.jsonl   # raw events
-```
-
-Set `LANGCHAIN_TRACING_V2=true` + `LANGCHAIN_API_KEY=...` to also stream to LangSmith for token usage and per-call latency.
-
----
-
-## Tests
-
-```bash
-pytest                              # everything
-pytest tests/test_models.py -v      # foundation only
-pytest -m 'not integration'         # skip the slow integration tests
-```
-
-Test layout:
-- `tests/test_models.py` — Pydantic round-trips and reducers
-- `tests/test_retrieval.py` — chunker, citation parser, grounding heuristics
-- `tests/test_guardrails.py` — injection, PII redaction, citation validity, refusal consistency
-- `tests/test_registry.py` — YAML-driven agent factory + extensibility
-- `tests/test_orchestrator_smoke.py` — end-to-end on Scenario 1 with mocked LLM
-
----
-
-## Design decisions (one-liner per ADR)
-
-1. **Orchestrator–worker on LangGraph** — handover is a state-machine problem; LangGraph's conditional edges + checkpointing fit natively
-2. **Pydantic everywhere** — typed contracts at every seam: `HandoverPacket`, `AgentResponse`, `RetrievedChunk`, `EscalationTicket`
-3. **Hybrid retrieval (BM25 + dense + RRF) with LLM reranker** — production-quality RAG within free-tier RAM constraints
-4. **YAML-driven `AgentRegistry`** — adding an agent never touches orchestrator code (§3.4)
-5. **Cheap input guardrails, semantic output guardrails** — block injections deterministically, validate citations after the LLM call
-6. **JSONL audit log + structlog + trace IDs** — every agent invocation, KB retrieval, and handover is replayable
-7. **LLM-agnostic agent layer** — `llm.py` selects provider by env var; specialists never import a vendor SDK
-8. **Render free-tier deployment** — one `render.yaml`, free-tier-friendly Blueprint
-9. **NVIDIA AI Endpoints (Llama 3.1/3.3)** — free for the 5-day window; `with_structured_output` works natively; eval harness paces under the 40 RPM limit
-
-Full context, alternatives considered, and trade-offs in **[`DESIGN.md`](DESIGN.md)**.
-
----
-
-## Known limitations
-
-- **SQLite checkpoint store.** LangGraph state is persisted with `SqliteSaver` under `backend/data/graph_checkpoints.sqlite`. For a multi-instance deployment, move the checkpointer to Postgres.
-- **Mock CRM.** `tools/crm.py` reads from `data/mock_customers.json`. Real billing/account lookups would call the actual CloudDash CRM.
-- **Simulated escalation.** Escalation creates a fake ticket UUID; no real human handoff.
-- **Latency.** With NVIDIA's free tier, end-to-end turns range 30–180 s (mostly 70b model + LLM reranker). Acceptable for the demo; production would parallelize rewrite + retrieval and use a smaller reranker.
-- **Single-tenant.** No tenant isolation in the audit log or vector store. Production would partition by tenant ID at the ChromaDB collection layer.
-- **No retry/backoff on the eval suite.** If NVIDIA returns 429, the runner skips the scenario; the 6 s inter-scenario sleep keeps us safely under 40 RPM in practice.
-
----
-
-## Deployment
-
-**Live deployment is already running:**
-
-| Service | URL | Platform |
-|---|---|---|
-| Backend API | https://clouddash-hev5.onrender.com | Render (free tier) |
-| Frontend UI | https://frontend-ten-gray-22.vercel.app/ | Vercel (free tier) |
-| Source Code | https://github.com/mohanganesh3/clouddash | GitHub |
-
-**To redeploy from scratch:**
-
-```bash
-# 1. Fork/clone the repo
-git clone https://github.com/mohanganesh3/clouddash.git && cd clouddash
-
-# 2. Backend → Render: "New Web Service" → connect repo → set env vars → deploy
-# 3. Frontend → Vercel: "New Project" → root directory: frontend → set NEXT_PUBLIC_API_URL → deploy
-```
-
-**What `render.yaml` does:**
-- Free-tier Python web service
-- Build: `pip install -e . && clouddash ingest` (rebuilds KB from Markdown)
-- Start: `uvicorn clouddash.api.app:app --host 0.0.0.0 --port $PORT`
-- Health check: `/api/health`
-- Persistent disk: 1 GB for ChromaDB (`/var/data/chroma`)
-
-**After deploy, the live URLs serve:**
-- **Frontend**: https://frontend-ten-gray-22.vercel.app/ — Next.js dashboard with SSE streaming, trace timeline, HITL dialog
-- `POST /api/chat` — REST endpoint
-- `GET /api/health` — liveness
-- `GET /docs` — Swagger UI (https://clouddash-hev5.onrender.com/docs)
-
----
-
-## License
-
-MIT — see [`LICENSE`](LICENSE).
+* **ADR-001**: Orchestrator-Worker pattern utilizing LangGraph for structured transitions.
+* **ADR-002**: First-class typed `HandoverPacket` contract models.
+* **ADR-003**: Hybrid RAG pipeline with LLM-based reranking and inline citations.
+* **ADR-004**: YAML-driven dynamic agent registry pattern.
+* **ADR-005**: 2-layer guardrails with self-correction feedback loop.
+* **ADR-006**: Dual observability using LangSmith + local JSONL audit tracing.
+* **ADR-007**: LLM-as-a-judge automated scenario grader.
+* **ADR-008**: Stateless blueprinting on Render free tier.
+* **ADR-009**: Provider configurations favoring Sarvam AI reasoning.
+* **ADR-010**: Real-time SSE token-by-token client rendering.
+* **ADR-011**: Standalone retrieval subgraph separation.
+* **ADR-012**: Fallback chain leveraging openai compatible ChatOpenAI wrapper.
+* **ADR-013**: Graph state serialization optimization.
+* **ADR-014**: Next.js 15 client dashboard interface.
+* **ADR-015**: Localization support using Sarvam API translator.
