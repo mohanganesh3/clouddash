@@ -17,6 +17,8 @@ services:
         value: /opt/render/project/src/backend/src
       - key: APP_ENV
         value: production
+      - key: FRONTEND_URL
+        value: https://clouddash-web.onrender.com
       - key: LOG_LEVEL
         value: INFO
       - key: LLM_PROVIDER
@@ -80,7 +82,7 @@ services:
     plan: free
     rootDir: frontend
     buildCommand: npm ci && npm run build
-    startCommand: npm run start -- -H 0.0.0.0 -p $PORT
+    startCommand: npm run start -- --hostname 0.0.0.0 --port $PORT
     autoDeploy: true
     envVars:
       - key: NEXT_PUBLIC_API_URL
